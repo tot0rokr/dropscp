@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>dropscp</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    code, pre { background: #f4f4f4; padding: 0.1em 0.3em; border-radius: 3px; }
+    pre { padding: 0.75rem; overflow-x: auto; }
+    h1 { margin-bottom: 0.25rem; }
+    .tag { display: inline-block; background: #e5e7eb; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>dropscp <span class="tag">M1</span></h1>
+  <p>Backend skeleton is running. UI lands in M2.</p>
+
+  <h3>Quick smoke test</h3>
+  <pre>curl -X POST http://127.0.0.1:8765/api/connect \
+  -H "Content-Type: application/json" \
+  -d '{"username":"user","host":"10.0.0.5","password":"..."}'
+
+# then with the returned sessionId:
+curl "http://127.0.0.1:8765/api/ls?sessionId=...&path=."</pre>
+</body>
+</html>

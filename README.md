@@ -1,7 +1,7 @@
 # dropscp
 
 A simple SFTP drag-and-drop web app for moving files between local and remote
-hosts, built because WinSCP is blocked by corporate security software.
+hosts.
 
 Runs entirely on `127.0.0.1`. Single-user. No SSH keys (v1).
 

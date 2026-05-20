@@ -122,6 +122,42 @@ app.post('/api/transfer', (req, res) => {
   }
 });
 
+app.post('/api/r2r', (req, res) => {
+  const { srcSessionId, dstSessionId, items, workers } = req.body || {};
+  if (!srcSessionId || !dstSessionId) {
+    return res.status(400).json({ error: 'srcSessionId and dstSessionId required' });
+  }
+  if (srcSessionId === dstSessionId) {
+    return res.status(400).json({ error: 'src and dst must be different sessions' });
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items[] required (non-empty)' });
+  }
+  for (const it of items) {
+    if (!it || typeof it.src !== 'string' || typeof it.dst !== 'string' || !it.src || !it.dst) {
+      return res.status(400).json({ error: 'each item must have non-empty src and dst' });
+    }
+  }
+  const requestedWorkers = workers != null ? Number(workers) : config.transfer.workers;
+  const cappedWorkers = Math.min(
+    config.transfer.workers,
+    clampWorkers(requestedWorkers)
+  );
+  try {
+    const job = transfer.create({
+      direction: 'r2r',
+      sessionId: srcSessionId,
+      dstSessionId,
+      items,
+      workers: cappedWorkers,
+    });
+    transfer.start(job);
+    res.json({ jobId: job.id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/transfer/:jobId/events', (req, res) => {
   const job = transfer.get(req.params.jobId);
   if (!job) return res.status(404).end();

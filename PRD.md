@@ -67,18 +67,54 @@
 
 - Toggle "R2R mode" to replace the local tree with a second remote tree
   (src on left, dst on right).
-- Transfer strategy:
-  1. **Direct**: SSH into src and run `scp`/`sftp` to push to dst. dst password
-     is passed via env var to `sshpass` (avoids process-arg leak).
-  2. **Local relay (auto-fallback)**: if direct fails for any reason, transfer
-     via the local machine to a temp directory, then up to dst. User is
-     notified that the fallback fired. Temp files are deleted on completion.
+- **v1 scope: local-relay only.** Transfer goes src → local temp dir →
+  dst, reusing the existing SFTP transfer engine. Temp files are deleted
+  on completion (including failures).
+- Direct mode (src host runs `scp`/`sftp` straight to dst via `sshpass`)
+  is **deferred**; see §10.
+
+### F3-deferred decisions (for the eventual direct-mode work)
+
+When direct mode is added, these need to be resolved up front:
+
+1. **Dst password handling.** Direct mode needs the destination host's
+   password available on the src side. Two options:
+   - (a) Cache the password in memory on the dst session object when the
+     user first connects. PRD §6 ("memory only") permits this.
+   - (b) Re-prompt the user for the dst password each R2R operation.
+   - Tentative default: (a) — cache in memory.
+2. **`sshpass` detection.** Probe `command -v sshpass` once on src session
+   create and cache the result; if absent, R2R direct is unavailable for
+   that src and we silently fall back to relay (the only path in v1).
+3. **`StrictHostKeyChecking`.** First-time src→dst SSH from src will hit
+   an unknown host key. Use `-o StrictHostKeyChecking=accept-new` so the
+   src records the fingerprint on first use.
+4. **SSE notice event.** When a planned direct attempt falls back to
+   relay mid-job, push an `event: notice` over the existing SSE channel
+   with the reason so the UI can surface it.
+5. **`/api/r2r` shape.** Reuse the batch protocol:
+   `{ srcSessionId, dstSessionId, items: [{src,dst}], workers }`.
+   Same `jobId` + SSE progress events as `/api/transfer`.
+6. **Progress accounting under relay.** Each leaf moves `2 × size` bytes
+   (download then upload). Either double `totalBytes` and label phases,
+   or keep `totalBytes = sum(size)` and animate twice. Tentative default:
+   the former — clearer to the user.
 
 ### F4. Multi-host tabs
 
 - Tab bar at the top; one tab per active SSH session (label: `user@host`).
 - `+` opens login dialog; `×` closes a tab (terminates that SSH session).
 - Switching tabs preserves each host's current path and tree state.
+
+### F6. Resizable pane split
+
+- A draggable vertical splitter sits between the two panes.
+- Default split is 50 / 50.
+- Dragging the splitter resizes either side; the ratio is clamped to
+  roughly [0.1, 0.9] so neither pane disappears.
+- On window resize, both panes scale proportionally — the current
+  ratio is preserved.
+- Not persisted across reloads (resets to 50 / 50).
 
 ### F5. Configuration file
 
@@ -160,9 +196,9 @@ In R2R mode the right pane shows the second remote host instead of local.
 - Passwords held in memory only — never written to disk, never logged.
 - Host key handling: on first connect, store fingerprint in a known-hosts file
   under the config directory. Warn on mismatch.
-- R2R direct mode uses `sshpass` with the password passed via env var (not as
-  a CLI argument). If `sshpass` is not present on src, fall back to local
-  relay.
+- R2R direct mode (deferred; see F3) uses `sshpass` with the password
+  passed via env var (not as a CLI argument). If `sshpass` is not present
+  on src, fall back to local relay. v1 always runs the relay path.
 - A per-launch token must accompany every API request (passed as a query
   parameter on the initial page open).
 
@@ -186,7 +222,8 @@ In R2R mode the right pane shows the second remote host instead of local.
 | M4 | Presets + config file | Presets restore after restart |
 | M5 | Multi-select + worker-pool concurrent transfer | 20-file batch transfers with 10 workers in parallel; per-batch aggregate progress works; one failing item does not abort the rest |
 | M6 | Multi-tab | Two remote hosts open simultaneously |
-| M7 | R2R direct + local-relay fallback | Both paths verified |
+| M7 | R2R via local relay only | A file copies src → local temp → dst; temp cleaned up; errors surfaced per leaf |
+| M8 (deferred) | R2R direct via `sshpass` | See §3 F3-deferred decisions |
 
 ## 9. Dependencies
 

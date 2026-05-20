@@ -93,6 +93,46 @@
     return idx < 0 ? trimmed : trimmed.slice(idx + 1);
   }
 
+  // ---- File type icons (by extension) ----
+  const EXT_ICONS = {
+    // image
+    jpg: '🖼', jpeg: '🖼', png: '🖼', gif: '🖼', webp: '🖼', svg: '🖼',
+    bmp: '🖼', ico: '🖼', tif: '🖼', tiff: '🖼', heic: '🖼', avif: '🖼',
+    // video
+    mp4: '🎬', mov: '🎬', avi: '🎬', mkv: '🎬', webm: '🎬', flv: '🎬', m4v: '🎬', wmv: '🎬',
+    // audio
+    mp3: '🎵', wav: '🎵', flac: '🎵', ogg: '🎵', m4a: '🎵', aac: '🎵', opus: '🎵',
+    // archive
+    zip: '🗜', tar: '🗜', gz: '🗜', bz2: '🗜', xz: '🗜', '7z': '🗜', rar: '🗜', tgz: '🗜', txz: '🗜',
+    // code / scripts
+    js: '📜', mjs: '📜', cjs: '📜', ts: '📜', tsx: '📜', jsx: '📜', vue: '📜', svelte: '📜',
+    py: '📜', go: '📜', rs: '📜', java: '📜', kt: '📜', c: '📜', cc: '📜', cpp: '📜',
+    h: '📜', hpp: '📜', cs: '📜', swift: '📜', rb: '📜', php: '📜',
+    sh: '📜', bash: '📜', zsh: '📜', ps1: '📜', lua: '📜', sql: '📜',
+    html: '📜', htm: '📜', css: '📜', scss: '📜', less: '📜',
+    // data / config
+    json: '🧾', yaml: '🧾', yml: '🧾', toml: '🧾', ini: '🧾', env: '🧾',
+    xml: '🧾', csv: '🧾', tsv: '🧾',
+    // documents
+    pdf: '📕',
+    doc: '📘', docx: '📘',
+    xls: '📗', xlsx: '📗',
+    ppt: '📙', pptx: '📙',
+    md: '📝', markdown: '📝', txt: '📝', rst: '📝', log: '📝',
+    // executable / installer
+    exe: '⚙', msi: '⚙', app: '⚙', dmg: '⚙', deb: '⚙', rpm: '⚙', apk: '⚙', bin: '⚙',
+    // disk image
+    iso: '💿', img: '💿',
+    // font
+    ttf: '🔤', otf: '🔤', woff: '🔤', woff2: '🔤',
+  };
+  function fileIcon(name, isDirectory) {
+    if (isDirectory) return '📁';
+    const m = /\.([^.]+)$/.exec(name || '');
+    if (!m) return '📄';
+    return EXT_ICONS[m[1].toLowerCase()] || '📄';
+  }
+
   // ---- Selection helpers ----
   function paneState(side) { return side === 'remote' ? state.remote : state.local; }
   function clearSelection(side) {
@@ -162,7 +202,7 @@
       li.dataset.isDir = e.isDirectory ? '1' : '0';
       li.dataset.index = String(idx);
 
-      const icon = document.createElement('span'); icon.className = 'icon'; icon.textContent = e.isDirectory ? '📁' : '📄';
+      const icon = document.createElement('span'); icon.className = 'icon'; icon.textContent = fileIcon(e.name, e.isDirectory);
       const name = document.createElement('span'); name.className = 'name'; name.textContent = e.name;
       const size = document.createElement('span'); size.className = 'size'; size.textContent = e.isDirectory ? '' : fmtSize(e.size);
       li.append(icon, name, size);
@@ -436,9 +476,8 @@
     dom.transferList.replaceChildren();
   }
 
-  function iconFor(/* leaf */) {
-    // Plain file icon for now; extension-based icons come in a follow-up commit.
-    return '📄';
+  function iconFor(leaf) {
+    return fileIcon(leaf.name, false);
   }
 
   function makeLeafRow(leaf) {

@@ -3,8 +3,8 @@
   // ---- State ----
   const state = {
     session: null,
-    remote: { path: null, entries: [] },
-    local:  { path: null, entries: [] },
+    remote: { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 },
+    local:  { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 },
     presets: [],
   };
 
@@ -86,52 +86,130 @@
     return (n / (1024 * 1024 * 1024)).toFixed(2) + ' G';
   }
   function setPath(el, p) { el.textContent = p || '—'; el.title = p || ''; }
+  function basename(p) {
+    const trimmed = String(p).replace(/[\\/]+$/, '');
+    const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+    return idx < 0 ? trimmed : trimmed.slice(idx + 1);
+  }
+
+  // ---- Selection helpers ----
+  function paneState(side) { return side === 'remote' ? state.remote : state.local; }
+  function clearSelection(side) {
+    const p = paneState(side);
+    p.selected.clear();
+    p.anchorIdx = -1;
+    refreshSelectionClasses(side);
+  }
+  function refreshSelectionClasses(side) {
+    const ul = side === 'remote' ? dom.remoteTree : dom.localTree;
+    const sel = paneState(side).selected;
+    ul.querySelectorAll('li[data-path]').forEach((li) => {
+      if (sel.has(li.dataset.path)) li.classList.add('selected');
+      else li.classList.remove('selected');
+    });
+  }
+  function handleRowClick(ev, side, idx, fullPath) {
+    const p = paneState(side);
+    if (ev.shiftKey && p.anchorIdx >= 0) {
+      const [lo, hi] = idx < p.anchorIdx ? [idx, p.anchorIdx] : [p.anchorIdx, idx];
+      p.selected.clear();
+      for (let i = lo; i <= hi; i++) {
+        const e = p.sorted[i];
+        if (e) p.selected.add(rowPath(side, p.path, e.name));
+      }
+    } else if (ev.ctrlKey || ev.metaKey) {
+      if (p.selected.has(fullPath)) p.selected.delete(fullPath);
+      else p.selected.add(fullPath);
+      p.anchorIdx = idx;
+    } else {
+      p.selected.clear();
+      p.selected.add(fullPath);
+      p.anchorIdx = idx;
+    }
+    refreshSelectionClasses(side);
+  }
+  function rowPath(side, currentPath, name) {
+    return side === 'remote' ? posixJoin(currentPath, name) : joinLocal(currentPath, name);
+  }
 
   // ---- Rendering ----
   function renderTree(ul, side, currentPath, entries, onDirOpen) {
     ul.replaceChildren();
+    const p = paneState(side);
     if (!entries.length) {
       const li = document.createElement('li');
       li.className = 'empty';
       li.textContent = '(empty)';
       ul.appendChild(li);
+      p.sorted = [];
       return;
     }
     const sorted = entries.slice().sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
-    for (const e of sorted) {
-      const fullPath = side === 'remote'
-        ? posixJoin(currentPath, e.name)
-        : joinLocal(currentPath, e.name);
-
+    p.sorted = sorted;
+    sorted.forEach((e, idx) => {
+      const fullPath = rowPath(side, currentPath, e.name);
       const li = document.createElement('li');
       li.className = e.isDirectory ? 'dir' : 'file';
+      if (p.selected.has(fullPath)) li.classList.add('selected');
       li.draggable = true;
       li.dataset.side = side;
       li.dataset.path = fullPath;
       li.dataset.name = e.name;
       li.dataset.isDir = e.isDirectory ? '1' : '0';
+      li.dataset.index = String(idx);
 
       const icon = document.createElement('span'); icon.className = 'icon'; icon.textContent = e.isDirectory ? '📁' : '📄';
       const name = document.createElement('span'); name.className = 'name'; name.textContent = e.name;
       const size = document.createElement('span'); size.className = 'size'; size.textContent = e.isDirectory ? '' : fmtSize(e.size);
       li.append(icon, name, size);
 
-      if (e.isDirectory) li.addEventListener('dblclick', () => onDirOpen(e));
+      li.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        handleRowClick(ev, side, idx, fullPath);
+      });
+      if (e.isDirectory) li.addEventListener('dblclick', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        onDirOpen(e);
+      });
 
       li.addEventListener('dragstart', (ev) => {
+        // If this row isn't part of the selection, replace selection with just this row.
+        if (!p.selected.has(fullPath)) {
+          p.selected.clear();
+          p.selected.add(fullPath);
+          p.anchorIdx = idx;
+          refreshSelectionClasses(side);
+        }
+        const items = sorted
+          .map((entry) => ({ entry, path: rowPath(side, currentPath, entry.name) }))
+          .filter((x) => p.selected.has(x.path))
+          .map((x) => ({ path: x.path, name: x.entry.name, isDirectory: x.entry.isDirectory }));
         ev.dataTransfer.effectAllowed = 'copy';
-        ev.dataTransfer.setData('application/json', JSON.stringify({
-          side, path: fullPath, name: e.name, isDirectory: e.isDirectory,
-        }));
-        li.classList.add('dragging');
+        ev.dataTransfer.setData('application/json', JSON.stringify({ side, items }));
+        // Mark dragging on every selected row
+        ul.querySelectorAll('li.selected').forEach((el) => el.classList.add('dragging'));
+        if (items.length > 1) {
+          // Custom drag image showing count
+          try {
+            const ghost = document.createElement('div');
+            ghost.className = 'drag-ghost';
+            ghost.textContent = `${items.length} items`;
+            document.body.appendChild(ghost);
+            ev.dataTransfer.setDragImage(ghost, 12, 12);
+            setTimeout(() => ghost.remove(), 0);
+          } catch (_) {}
+        }
       });
-      li.addEventListener('dragend', () => li.classList.remove('dragging'));
+      li.addEventListener('dragend', () => {
+        ul.querySelectorAll('li.dragging').forEach((el) => el.classList.remove('dragging'));
+      });
 
       ul.appendChild(li);
-    }
+    });
   }
 
   function renderMessage(ul, cls, msg) {
@@ -145,6 +223,7 @@
   // ---- Loaders ----
   async function loadRemote(p) {
     if (!state.session) return;
+    clearSelection('remote');
     renderMessage(dom.remoteTree, 'loading', 'loading…');
     try {
       const data = await Api.remoteLs(state.session.sessionId, p || '.');
@@ -159,6 +238,7 @@
   }
 
   async function loadLocal(p) {
+    clearSelection('local');
     renderMessage(dom.localTree, 'loading', 'loading…');
     try {
       const data = await Api.localLs(p);
@@ -174,7 +254,8 @@
 
   // ---- Pane action buttons (..  mkdir  refresh) ----
   document.querySelectorAll('[data-action]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
       const side = btn.dataset.side;
       const action = btn.dataset.action;
       const isRemote = side === 'remote';
@@ -204,6 +285,17 @@
     });
   });
 
+  // ---- Click-on-background clears selection for that side ----
+  function setupBackgroundClick(paneEl, side) {
+    paneEl.addEventListener('click', (ev) => {
+      if (ev.target.closest('li[data-path]')) return;
+      if (ev.target.closest('button')) return;
+      clearSelection(side);
+    });
+  }
+  setupBackgroundClick(dom.remotePane, 'remote');
+  setupBackgroundClick(dom.localPane, 'local');
+
   // ---- Drag-and-drop wiring ----
   function setupDropZone(paneEl, side) {
     function clearHighlights() {
@@ -231,7 +323,8 @@
       let payload;
       try { payload = JSON.parse(ev.dataTransfer.getData('application/json')); }
       catch { return; }
-      if (!payload || payload.side === side) return;
+      if (!payload || !Array.isArray(payload.items) || payload.items.length === 0) return;
+      if (payload.side === side) return;
       if (side === 'remote' && !state.session) {
         window.alert('connect to a remote host first');
         return;
@@ -244,16 +337,21 @@
         targetDir = (side === 'remote') ? state.remote.path : state.local.path;
       }
       if (!targetDir) return;
-      initiateTransfer(payload, side, targetDir);
+      initiateTransfer(payload.side, payload.items, side, targetDir);
     });
   }
   setupDropZone(dom.remotePane, 'remote');
   setupDropZone(dom.localPane, 'local');
 
-  // ---- Conflict dialog ----
-  function askConflict(name, targetDir) {
+  // ---- Conflict dialog (batch-aware) ----
+  function askBatchConflict(conflictNames, targetDir) {
     return new Promise((resolve) => {
-      dom.conflictMessage.textContent = `"${name}" already exists in ${targetDir}`;
+      const n = conflictNames.length;
+      const sample = conflictNames.slice(0, 3).map((x) => `"${x}"`).join(', ');
+      const tail = n > 3 ? ` and ${n - 3} more` : '';
+      dom.conflictMessage.textContent = n === 1
+        ? `${sample} already exists in ${targetDir}`
+        : `${n} items already exist in ${targetDir}: ${sample}${tail}`;
       const onClick = (ev) => {
         const action = ev.target.dataset && ev.target.dataset.conflict;
         if (!action) return;
@@ -270,38 +368,48 @@
   }
 
   // ---- Transfer flow ----
-  async function initiateTransfer(src, dstSide, dstDir) {
-    // dstDir is the directory on dstSide that will receive the item.
-    // Conflict: look for src.name in the *visible* listing of dstSide when dstDir == current visible path.
-    const visibleListing = (dstSide === 'remote') ? state.remote : state.local;
-    let conflict = false;
-    if (visibleListing.path === dstDir) {
-      conflict = visibleListing.entries.some((e) => e.name === src.name);
+  async function initiateTransfer(srcSide, srcItems, dstSide, dstDir) {
+    // 1) Detect conflicts against dst dir listing
+    let dstEntries = null;
+    const visible = (dstSide === 'remote') ? state.remote : state.local;
+    if (visible.path === dstDir) {
+      dstEntries = visible.entries;
     } else {
-      // Dropping into a sub-folder we haven't browsed; do a quick ls
       try {
         const data = (dstSide === 'remote')
           ? await Api.remoteLs(state.session.sessionId, dstDir)
           : await Api.localLs(dstDir);
-        conflict = data.entries.some((e) => e.name === src.name);
-      } catch (_) { /* if we can't list, let backend report on transfer */ }
+        dstEntries = data.entries;
+      } catch (_) { dstEntries = null; }
     }
-    if (conflict) {
-      const action = await askConflict(src.name, dstDir);
-      if (action !== 'overwrite') return;
+    let workingItems = srcItems.slice();
+    if (dstEntries) {
+      const existingNames = new Set(dstEntries.map((e) => e.name));
+      const conflicts = workingItems.filter((it) => existingNames.has(it.name));
+      if (conflicts.length) {
+        const action = await askBatchConflict(conflicts.map((c) => c.name), dstDir);
+        if (action === 'cancel') return;
+        if (action === 'skip') {
+          const conflictSet = new Set(conflicts.map((c) => c.name));
+          workingItems = workingItems.filter((it) => !conflictSet.has(it.name));
+        }
+        // 'overwrite': keep workingItems as-is (sftp.fastPut overwrites; fs writeFile overwrites)
+      }
     }
+    if (!workingItems.length) return;
 
-    const finalDst = (dstSide === 'remote')
-      ? posixJoin(dstDir, src.name)
-      : joinLocal(dstDir, src.name);
-    const direction = (src.side === 'local') ? 'upload' : 'download';
+    // 2) Build batch payload
+    const direction = (srcSide === 'local') ? 'upload' : 'download';
+    const items = workingItems.map((it) => ({
+      src: it.path,
+      dst: (dstSide === 'remote') ? posixJoin(dstDir, it.name) : joinLocal(dstDir, it.name),
+    }));
 
     try {
       const { jobId } = await Api.startTransfer({
         direction,
-        src: src.path,
-        dst: finalDst,
         sessionId: state.session && state.session.sessionId,
+        items,
       });
       await streamProgress(jobId, dstSide, dstDir);
     } catch (err) {
@@ -315,12 +423,18 @@
   function updateProgress(snap) {
     const pct = snap.totalBytes > 0
       ? Math.min(100, (snap.transferredBytes / snap.totalBytes) * 100)
-      : 0;
+      : (snap.totalFiles > 0 ? (snap.doneFiles / snap.totalFiles) * 100 : 0);
     dom.progressFill.style.width = pct.toFixed(1) + '%';
-    const fileInfo = snap.totalFiles > 1
-      ? ` (${snap.doneFiles}/${snap.totalFiles}) ${snap.currentFile}`
-      : ` ${snap.currentFile}`;
-    dom.statusText.textContent = (snap.direction === 'upload' ? 'Uploading' : 'Downloading') + fileInfo;
+
+    const verb = snap.direction === 'upload' ? 'Uploading' : 'Downloading';
+    const active = (snap.currentFiles || []).map((p) => basename(p));
+    const activeLabel = active.length === 0
+      ? ''
+      : active.length === 1
+        ? ` — ${active[0]}`
+        : ` — ${active[0]} (+${active.length - 1} more)`;
+    const fileCounter = snap.totalFiles > 1 ? ` (${snap.doneFiles}/${snap.totalFiles})` : '';
+    dom.statusText.textContent = `${verb}${fileCounter}${activeLabel}`;
     dom.statusMeta.textContent = `${fmtSize(snap.transferredBytes)} / ${fmtSize(snap.totalBytes)}  ${pct.toFixed(0)}%`;
   }
 
@@ -328,11 +442,21 @@
     return new Promise((resolve) => {
       const es = new EventSource(`/api/transfer/${jobId}/events`);
       showProgress();
-      es.addEventListener('progress', (e) => updateProgress(JSON.parse(e.data)));
-      es.addEventListener('done', () => {
+      let lastSnap = null;
+      es.addEventListener('progress', (e) => {
+        try { lastSnap = JSON.parse(e.data); updateProgress(lastSnap); } catch (_) {}
+      });
+      es.addEventListener('done', (e) => {
         es.close();
         hideProgress();
-        // Refresh the side that received the file if we're viewing the target dir
+        let data = {};
+        try { data = JSON.parse(e.data); } catch (_) {}
+        const errs = (data.errors && data.errors.length) ? data.errors : (lastSnap && lastSnap.errors) || [];
+        if (errs.length) {
+          const summary = errs.slice(0, 5).map((x) => `• ${basename(x.src)}: ${x.message}`).join('\n');
+          const tail = errs.length > 5 ? `\n…and ${errs.length - 5} more` : '';
+          window.alert(`Transfer finished with ${errs.length} error(s):\n${summary}${tail}`);
+        }
         if (refreshSide === 'remote' && state.session && state.remote.path === refreshDir) {
           loadRemote(state.remote.path);
         } else if (refreshSide === 'local' && state.local.path === refreshDir) {
@@ -349,7 +473,6 @@
         resolve();
       });
       es.onerror = () => {
-        // Network/connection issue (not server-emitted 'fail')
         if (es.readyState === EventSource.CLOSED) return;
         es.close();
         hideProgress();
@@ -480,7 +603,7 @@
     if (!state.session) return;
     try { await Api.disconnect(state.session.sessionId); } catch (_) {}
     state.session = null;
-    state.remote = { path: null, entries: [] };
+    state.remote = { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 };
     dom.sessionInfo.textContent = 'not connected';
     setPath(dom.remotePath, '');
     renderMessage(dom.remoteTree, 'empty', 'connect to a host to browse');

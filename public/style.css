@@ -108,10 +108,29 @@ button.primary:hover { background: #1d4ed8; }
 .tree li.dir { cursor: pointer; }
 .tree li.dir:hover { background: #dbeafe; }
 .tree li.dragging { opacity: 0.4; }
+.tree li.selected {
+  background: #dbeafe;
+}
+.tree li.selected:hover { background: #bfdbfe; }
 .tree li.drag-over {
   background: #bfdbfe !important;
   outline: 1px solid #3b82f6;
   outline-offset: -1px;
+}
+
+/* Drag ghost shown when dragging a multi-item selection */
+.drag-ghost {
+  position: absolute;
+  top: -1000px;
+  left: -1000px;
+  padding: 0.25rem 0.6rem;
+  background: #2563eb;
+  color: white;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-weight: 600;
+  pointer-events: none;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.2);
 }
 .tree .icon { width: 1.2em; text-align: center; flex-shrink: 0; }
 .tree .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

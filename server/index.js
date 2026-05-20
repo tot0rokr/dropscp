@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('path');
 const os = require('os');
-const { loadConfig } = require('./config');
+const { loadConfig, clampWorkers } = require('./config');
 const sessions = require('./ssh-session');
 const localFs = require('./local-fs');
 const transfer = require('./transfer');
@@ -93,16 +93,28 @@ app.post('/api/presets/delete', (req, res) => {
 
 // ---- Transfer ----
 app.post('/api/transfer', (req, res) => {
-  const { direction, sessionId, src, dst } = req.body || {};
-  if (!direction || !src || !dst) {
-    return res.status(400).json({ error: 'direction, src, dst required' });
+  const { direction, sessionId, items, workers } = req.body || {};
+  if (direction !== 'upload' && direction !== 'download') {
+    return res.status(400).json({ error: 'direction must be "upload" or "download"' });
   }
-  if ((direction === 'upload' || direction === 'download') && !sessionId) {
-    return res.status(400).json({ error: 'sessionId required for ' + direction });
+  if (!sessionId) {
+    return res.status(400).json({ error: 'sessionId required' });
   }
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items[] required (non-empty)' });
+  }
+  for (const it of items) {
+    if (!it || typeof it.src !== 'string' || typeof it.dst !== 'string' || !it.src || !it.dst) {
+      return res.status(400).json({ error: 'each item must have non-empty src and dst' });
+    }
+  }
+  const requestedWorkers = workers != null ? Number(workers) : config.transfer.workers;
+  const cappedWorkers = Math.min(
+    config.transfer.workers,
+    clampWorkers(requestedWorkers)
+  );
   try {
-    const job = transfer.create({ direction, sessionId, src, dst });
-    // Kick off async; do not await
+    const job = transfer.create({ direction, sessionId, items, workers: cappedWorkers });
     transfer.start(job);
     res.json({ jobId: job.id });
   } catch (err) {
@@ -133,16 +145,16 @@ app.get('/api/transfer/:jobId/events', (req, res) => {
 
   const onProgress = (snap) => send('progress', snap);
   const onDone = (data) => { send('done', data); res.end(); };
-  const onError = (data) => { send('fail', data); res.end(); };
+  const onFail = (data) => { send('fail', data); res.end(); };
 
   job.events.on('progress', onProgress);
   job.events.once('done', onDone);
-  job.events.once('error', onError);
+  job.events.once('fail', onFail);
 
   req.on('close', () => {
     job.events.off('progress', onProgress);
     job.events.off('done', onDone);
-    job.events.off('error', onError);
+    job.events.off('fail', onFail);
   });
 });
 

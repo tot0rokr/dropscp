@@ -3,6 +3,12 @@ const crypto = require('crypto');
 
 const sessions = new Map();
 
+function openSftp(client) {
+  return new Promise((resolve, reject) => {
+    client.sftp((err, sftp) => (err ? reject(err) : resolve(sftp)));
+  });
+}
+
 function create({ username, host, port, password }) {
   return new Promise((resolve, reject) => {
     const client = new Client();
@@ -14,14 +20,21 @@ function create({ username, host, port, password }) {
       reject(err);
     };
     client
-      .on('ready', () => {
-        client.sftp((err, sftp) => {
-          if (err) return fail(err);
+      .on('ready', async () => {
+        try {
+          const sftp = await openSftp(client);
           const id = crypto.randomBytes(16).toString('hex');
-          sessions.set(id, { client, sftp, info: { username, host, port } });
+          sessions.set(id, {
+            client,
+            sftp,
+            sftpPool: [sftp],
+            info: { username, host, port },
+          });
           settled = true;
           resolve(id);
-        });
+        } catch (err) {
+          fail(err);
+        }
       })
       .on('error', fail)
       .connect({ username, host, port, password, readyTimeout: 10_000 });
@@ -39,6 +52,23 @@ function close(sessionId) {
   if (!s) return;
   try { s.client.end(); } catch (_) {}
   sessions.delete(sessionId);
+}
+
+// Returns an array of `n` SFTP channels (always >= 1). Lazily opens new channels
+// as needed and caches them on the session; channels live until the session is
+// closed. If a channel open fails, returns whatever pool we have so far (>= 1).
+async function acquireSftpPool(sessionId, n) {
+  const s = get(sessionId);
+  const want = Math.max(1, Math.floor(n) || 1);
+  while (s.sftpPool.length < want) {
+    try {
+      const extra = await openSftp(s.client);
+      s.sftpPool.push(extra);
+    } catch (_) {
+      break;
+    }
+  }
+  return s.sftpPool.slice(0, Math.min(want, s.sftpPool.length));
 }
 
 function ls(sessionId, dirPath) {
@@ -68,4 +98,4 @@ function mkdir(sessionId, dirPath) {
   });
 }
 
-module.exports = { create, close, ls, mkdir, get };
+module.exports = { create, close, ls, mkdir, get, acquireSftpPool };

@@ -5,6 +5,7 @@ const { loadConfig } = require('./config');
 const sessions = require('./ssh-session');
 const localFs = require('./local-fs');
 const transfer = require('./transfer');
+const presets = require('./presets');
 
 const config = loadConfig();
 const app = express();
@@ -66,6 +67,25 @@ app.post('/api/local/mkdir', async (req, res) => {
   try {
     await localFs.mkdir(req.body.path);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ---- Presets ----
+app.get('/api/presets', (req, res) => {
+  res.json({ presets: presets.list() });
+});
+app.post('/api/presets', (req, res) => {
+  try {
+    res.json({ presets: presets.upsert(req.body || {}) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+app.post('/api/presets/delete', (req, res) => {
+  try {
+    res.json({ presets: presets.remove(req.body && req.body.name) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

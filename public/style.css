@@ -21,6 +21,12 @@ button {
 }
 button:hover { background: #f3f4f6; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: white;
+}
+button.primary:hover { background: #1d4ed8; }
 
 /* --- Topbar --- */
 .topbar {
@@ -39,11 +45,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 0.85em;
 }
-.topbar button {
-  border-color: #4b5563;
-  background: #374151;
-  color: white;
-}
+.topbar button { border-color: #4b5563; background: #374151; color: white; }
 .topbar button:hover { background: #4b5563; }
 
 /* --- Panes --- */
@@ -60,7 +62,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
 }
+.pane.drag-into-pane { outline: 2px dashed #3b82f6; outline-offset: -2px; background: #eff6ff; }
 .pane > header {
   display: flex;
   align-items: center;
@@ -78,7 +82,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  direction: rtl;       /* keep tail visible when truncated */
+  direction: rtl;
   text-align: left;
 }
 .actions { display: flex; gap: 0.25rem; }
@@ -99,9 +103,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   user-select: none;
   align-items: center;
 }
+.tree li[draggable="true"] { cursor: grab; }
 .tree li:hover { background: #eff6ff; }
 .tree li.dir { cursor: pointer; }
 .tree li.dir:hover { background: #dbeafe; }
+.tree li.dragging { opacity: 0.4; }
+.tree li.drag-over {
+  background: #bfdbfe !important;
+  outline: 1px solid #3b82f6;
+  outline-offset: -1px;
+}
 .tree .icon { width: 1.2em; text-align: center; flex-shrink: 0; }
 .tree .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree .size {
@@ -117,17 +128,45 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .tree .error { color: #dc2626; font-style: normal; }
 
-/* --- Login dialog --- */
-dialog#login-dialog {
+/* --- Status bar --- */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.75rem;
+  background: #1f2937;
+  color: #f9fafb;
+  border-top: 1px solid #111827;
+  font-size: 0.85em;
+}
+.status-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-meta { font-variant-numeric: tabular-nums; color: #d1d5db; }
+.progress-track {
+  width: 180px;
+  height: 8px;
+  background: #374151;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0;
+  background: #34d399;
+  transition: width 0.1s linear;
+}
+
+/* --- Dialogs --- */
+dialog#login-dialog, dialog#conflict-dialog {
   border: none;
   border-radius: 8px;
   padding: 1.5rem;
   box-shadow: 0 10px 25px rgba(0,0,0,0.15);
   min-width: 320px;
 }
-dialog#login-dialog::backdrop { background: rgba(0,0,0,0.25); }
+dialog::backdrop { background: rgba(0,0,0,0.25); }
+
 #login-form { display: flex; flex-direction: column; gap: 0.5rem; }
-#login-form h3 { margin: 0 0 0.5rem; }
+#login-form h3, .conflict-body h3 { margin: 0 0 0.5rem; }
 #login-form label {
   display: flex;
   flex-direction: column;
@@ -142,5 +181,15 @@ dialog#login-dialog::backdrop { background: rgba(0,0,0,0.25); }
   border-radius: 4px;
 }
 #login-form input:focus { outline: 2px solid #93c5fd; outline-offset: -1px; }
-#login-form .row { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
+#login-form .row, .conflict-body .row {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
 #login-form .error { color: #dc2626; font-size: 0.85em; }
+#conflict-message {
+  margin: 0 0 0.75rem;
+  color: #4b5563;
+  word-break: break-all;
+}

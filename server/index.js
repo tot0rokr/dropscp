@@ -4,6 +4,7 @@ const os = require('os');
 const { loadConfig } = require('./config');
 const sessions = require('./ssh-session');
 const localFs = require('./local-fs');
+const transfer = require('./transfer');
 
 const config = loadConfig();
 const app = express();
@@ -68,6 +69,61 @@ app.post('/api/local/mkdir', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+// ---- Transfer ----
+app.post('/api/transfer', (req, res) => {
+  const { direction, sessionId, src, dst } = req.body || {};
+  if (!direction || !src || !dst) {
+    return res.status(400).json({ error: 'direction, src, dst required' });
+  }
+  if ((direction === 'upload' || direction === 'download') && !sessionId) {
+    return res.status(400).json({ error: 'sessionId required for ' + direction });
+  }
+  try {
+    const job = transfer.create({ direction, sessionId, src, dst });
+    // Kick off async; do not await
+    transfer.start(job);
+    res.json({ jobId: job.id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/transfer/:jobId/events', (req, res) => {
+  const job = transfer.get(req.params.jobId);
+  if (!job) return res.status(404).end();
+
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+
+  const send = (event, data) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Initial snapshot
+  send('progress', transfer.snapshot(job));
+  if (job.status === 'done') { send('done', { ok: true }); return res.end(); }
+  if (job.status === 'error') { send('fail', { message: job.error }); return res.end(); }
+
+  const onProgress = (snap) => send('progress', snap);
+  const onDone = (data) => { send('done', data); res.end(); };
+  const onError = (data) => { send('fail', data); res.end(); };
+
+  job.events.on('progress', onProgress);
+  job.events.once('done', onDone);
+  job.events.once('error', onError);
+
+  req.on('close', () => {
+    job.events.off('progress', onProgress);
+    job.events.off('done', onDone);
+    job.events.off('error', onError);
+  });
 });
 
 const { port, bindHost } = config.server;

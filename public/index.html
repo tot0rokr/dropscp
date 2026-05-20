@@ -14,7 +14,7 @@
   </header>
 
   <main class="panes">
-    <section class="pane" id="pane-remote">
+    <section class="pane" id="pane-remote" data-side="remote">
       <header>
         <span class="pane-title">Remote</span>
         <div class="path" id="remote-path" title="">—</div>
@@ -24,12 +24,12 @@
           <button data-action="refresh" data-side="remote" title="Refresh">↻</button>
         </div>
       </header>
-      <ul class="tree" id="remote-tree">
+      <ul class="tree" id="remote-tree" data-side="remote">
         <li class="empty">connect to a host to browse</li>
       </ul>
     </section>
 
-    <section class="pane" id="pane-local">
+    <section class="pane" id="pane-local" data-side="local">
       <header>
         <span class="pane-title">Local</span>
         <div class="path" id="local-path" title="">—</div>
@@ -39,9 +39,15 @@
           <button data-action="refresh" data-side="local" title="Refresh">↻</button>
         </div>
       </header>
-      <ul class="tree" id="local-tree"></ul>
+      <ul class="tree" id="local-tree" data-side="local"></ul>
     </section>
   </main>
+
+  <footer class="status-bar" id="status-bar" hidden>
+    <div class="status-text" id="status-text">—</div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="status-meta" id="status-meta"></div>
+  </footer>
 
   <dialog id="login-dialog">
     <form id="login-form" method="dialog" autocomplete="off">
@@ -56,6 +62,18 @@
       </div>
       <div class="error" id="login-error" hidden></div>
     </form>
+  </dialog>
+
+  <dialog id="conflict-dialog">
+    <div class="conflict-body">
+      <h3>Already exists</h3>
+      <p id="conflict-message"></p>
+      <div class="row">
+        <button type="button" data-conflict="cancel">Cancel</button>
+        <button type="button" data-conflict="skip">Skip</button>
+        <button type="button" data-conflict="overwrite" class="primary">Overwrite</button>
+      </div>
+    </div>
   </dialog>
 
   <script src="app.js"></script>

@@ -763,6 +763,19 @@
   }
 
   // ---- Login ----
+  const loginSubmitBtn = dom.loginForm.querySelector('button[type="submit"]');
+  let connectInFlight = false;
+
+  function setLoginBusy(busy) {
+    for (const el of dom.loginForm.elements) {
+      // Leave the Cancel button enabled so the user can still abort.
+      if (el === dom.loginCancel) continue;
+      el.disabled = busy;
+    }
+    loginSubmitBtn.textContent = busy ? 'Connecting…' : 'Connect';
+    dom.loginDialog.setAttribute('aria-busy', busy ? 'true' : 'false');
+  }
+
   function showLogin() {
     dom.loginError.hidden = true;
     dom.loginError.textContent = '';
@@ -775,6 +788,12 @@
 
   dom.loginForm.addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    if (connectInFlight) return;
+    connectInFlight = true;
+    dom.loginError.hidden = true;
+    dom.loginError.textContent = '';
+    setLoginBusy(true);
+
     const fd = new FormData(dom.loginForm);
     const creds = {
       username: String(fd.get('username') || '').trim(),
@@ -800,6 +819,9 @@
     } catch (err) {
       dom.loginError.textContent = err.message;
       dom.loginError.hidden = false;
+    } finally {
+      connectInFlight = false;
+      setLoginBusy(false);
     }
   });
 

@@ -65,6 +65,8 @@
     statusMeta:     $('#status-meta'),
     progressFill:   $('#progress-fill'),
     transferList:   $('#transfer-list'),
+    panes:          $('.panes'),
+    splitter:       $('#pane-splitter'),
   };
 
   // ---- Path helpers ----
@@ -824,6 +826,33 @@
       setLoginBusy(false);
     }
   });
+
+  // ---- Pane splitter (resizable divider) ----
+  (function setupSplitter() {
+    const MIN = 0.1, MAX = 0.9;
+    let dragging = false;
+    dom.splitter.addEventListener('mousedown', (ev) => {
+      if (ev.button !== 0) return;
+      dragging = true;
+      document.body.classList.add('dragging-splitter');
+      dom.splitter.classList.add('dragging');
+      ev.preventDefault();
+    });
+    window.addEventListener('mousemove', (ev) => {
+      if (!dragging) return;
+      const rect = dom.panes.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const ratio = (ev.clientX - rect.left) / rect.width;
+      const clamped = Math.min(MAX, Math.max(MIN, ratio));
+      dom.panes.style.setProperty('--split', String(clamped));
+    });
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove('dragging-splitter');
+      dom.splitter.classList.remove('dragging');
+    });
+  })();
 
   // ---- Init ----
   loadLocal();

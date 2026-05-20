@@ -99,20 +99,47 @@ button.primary:hover { background: #1d4ed8; }
 
 /* --- Panes --- */
 .panes {
+  --split: 0.5;
   flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  background: #e5e7eb;
+  display: flex;
   min-height: 0;
+  background: #fafafa;
 }
 .pane {
   background: white;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   position: relative;
+  flex-shrink: 1;
+  flex-basis: 0;
 }
+#pane-remote { flex-grow: var(--split); }
+#pane-local  { flex-grow: calc(1 - var(--split)); }
+
+/* --- Splitter (resizable divider) --- */
+.splitter {
+  flex: 0 0 5px;
+  background: #e5e7eb;
+  cursor: col-resize;
+  position: relative;
+  z-index: 2;
+  transition: background 0.1s;
+}
+.splitter::before {
+  /* widen the hit target to ~11px without changing visual width */
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+.splitter:hover { background: #93c5fd; }
+.splitter.dragging { background: #2563eb; }
+body.dragging-splitter { cursor: col-resize; user-select: none; }
+body.dragging-splitter * { user-select: none !important; }
 .pane.drag-into-pane { outline: 2px dashed #3b82f6; outline-offset: -2px; background: #eff6ff; }
 .pane > header {
   display: flex;

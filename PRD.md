@@ -44,6 +44,24 @@
 - Per-file and overall transfer progress.
 - Conflict on same-named file: dialog (overwrite / skip / cancel).
 - `mkdir` button per side.
+- **Multi-select**: Ctrl+click toggles an item in the selection, Shift+click
+  range-selects, a plain click clears and selects just one. Selected rows
+  get a visual highlight.
+- **Multi-item drag**: dragging a row that is part of the selection drags
+  the whole selection; dragging an unselected row drags only that row
+  (and replaces the selection with it on `dragstart`).
+- **Concurrent transfers**: a batch drop launches a **worker pool** that
+  transfers files in parallel. Default 10 workers, configurable via
+  `transfer.workers` in the config file (range 1–10). Each worker holds its
+  own SFTP channel multiplexed on the host's single SSH connection. The
+  effective upper bound is the remote server's `MaxSessions` (OpenSSH
+  default is 10).
+- Batch progress aggregates: total bytes, total files, files completed,
+  and currently-active filenames across all workers. A batch finishes when
+  every item has either completed or errored; individual errors are surfaced
+  in a summary at the end without aborting the rest.
+- Within a directory drop the recursive walk produces leaf-file jobs which
+  feed the same worker pool, so a single folder also transfers in parallel.
 
 ### F3. Remote ↔ Remote transfer
 
@@ -70,6 +88,7 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
 {
   "version": 1,
   "server": { "port": 8765, "bindHost": "127.0.0.1" },
+  "transfer": { "workers": 10 },
   "presets": [
     { "name": "dev-vm", "username": "kim", "host": "10.0.0.5", "port": 22 }
   ],
@@ -86,19 +105,33 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
 
 ```
 [Browser]
-  ├─ HTML/JS UI (drag-and-drop, trees, tabs)
-  └─ HTTP / WebSocket  ←→  [Node Backend (127.0.0.1:8765)]
-                              ├─ POST /api/connect       (open SSH; returns sessionId)
-                              ├─ POST /api/disconnect
-                              ├─ GET  /api/ls            (remote directory listing)
-                              ├─ POST /api/mkdir         (remote)
-                              ├─ WS   /transfer          (up/download with progress)
-                              ├─ POST /api/r2r           (remote↔remote w/ auto-fallback)
-                              ├─ /api/presets            (CRUD)
-                              └─ /api/local/*            (local filesystem)
+  ├─ HTML/JS UI (drag-and-drop, trees, tabs, multi-select)
+  └─ HTTP + SSE  ←→  [Node Backend (127.0.0.1:8765)]
+                        ├─ POST /api/connect                (open SSH; returns sessionId)
+                        ├─ POST /api/disconnect
+                        ├─ GET  /api/ls                     (remote directory listing)
+                        ├─ POST /api/mkdir                  (remote)
+                        ├─ POST /api/transfer               (start a batch; returns jobId)
+                        ├─ GET  /api/transfer/:jobId/events (SSE progress/done/fail)
+                        ├─ POST /api/r2r                    (remote↔remote w/ auto-fallback)
+                        ├─ /api/presets                     (CRUD)
+                        └─ /api/local/*                     (local filesystem)
 ```
 
 - SSH sessions live in backend memory keyed by `sessionId` (lost on restart).
+- Each session lazily opens an **SFTP channel pool** sized by
+  `transfer.workers` (default 10). Channels are reused across batches and
+  closed only when the session is closed.
+- `/api/transfer` body shape:
+  ```json
+  {
+    "direction": "upload" | "download",
+    "sessionId": "...",
+    "items": [{ "src": "...", "dst": "..." }, ...],
+    "workers": 10
+  }
+  ```
+  `workers` is optional and clamps to `[1, transfer.workers]`.
 - Backend binds only `127.0.0.1`.
 - A startup token is required on every API call to defend against drive-by
   requests from other local processes.
@@ -140,7 +173,8 @@ In R2R mode the right pane shows the second remote host instead of local.
 - Multi-user, authentication, sessions across restarts.
 - HTTPS, external deployment.
 - Mobile UI.
-- Transfer queue prioritization (transfers run sequentially).
+- Transfer queue prioritization (within a batch, items are FIFO across
+  available workers; there are no per-item priorities or pause/reorder).
 
 ## 8. Milestones
 
@@ -150,8 +184,9 @@ In R2R mode the right pane shows the second remote host instead of local.
 | M2 | HTML UI, single tab, side-by-side trees | Click navigation works |
 | M3 | Drag-and-drop upload/download + progress | 1 GB file transfers successfully |
 | M4 | Presets + config file | Presets restore after restart |
-| M5 | Multi-tab | Two remote hosts open simultaneously |
-| M6 | R2R direct + local-relay fallback | Both paths verified |
+| M5 | Multi-select + worker-pool concurrent transfer | 20-file batch transfers with 10 workers in parallel; per-batch aggregate progress works; one failing item does not abort the rest |
+| M6 | Multi-tab | Two remote hosts open simultaneously |
+| M7 | R2R direct + local-relay fallback | Both paths verified |
 
 ## 9. Dependencies
 

@@ -5,6 +5,7 @@
     session: null,
     remote: { path: null, entries: [] },
     local:  { path: null, entries: [] },
+    presets: [],
   };
 
   // ---- API ----
@@ -27,6 +28,9 @@
     localLs:       (p)            => api('GET',  p ? `/api/local/ls?path=${encodeURIComponent(p)}` : '/api/local/ls'),
     localMkdir:    (p)            => api('POST', '/api/local/mkdir', { path: p }),
     startTransfer: (body)         => api('POST', '/api/transfer', body),
+    listPresets:   ()             => api('GET',  '/api/presets'),
+    savePreset:    (p)            => api('POST', '/api/presets', p),
+    deletePreset:  (name)         => api('POST', '/api/presets/delete', { name }),
   };
 
   // ---- DOM ----
@@ -39,6 +43,9 @@
     loginForm:      $('#login-form'),
     loginCancel:    $('#login-cancel'),
     loginError:     $('#login-error'),
+    presetSelect:   $('#preset-select'),
+    presetSave:     $('#preset-save'),
+    presetDelete:   $('#preset-delete'),
     conflictDialog: $('#conflict-dialog'),
     conflictMessage:$('#conflict-message'),
     remotePane:     $('#pane-remote'),
@@ -352,10 +359,88 @@
     });
   }
 
+  // ---- Presets ----
+  function populatePresetSelect() {
+    const sel = dom.presetSelect;
+    const prev = sel.value;
+    sel.replaceChildren();
+    const none = document.createElement('option');
+    none.value = ''; none.textContent = '(none)';
+    sel.appendChild(none);
+    for (const p of state.presets) {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = `${p.name}  —  ${p.username}@${p.host}:${p.port}`;
+      sel.appendChild(opt);
+    }
+    if (state.presets.some((p) => p.name === prev)) sel.value = prev;
+  }
+
+  async function refreshPresets() {
+    try {
+      const data = await Api.listPresets();
+      state.presets = data.presets || [];
+    } catch (_) {
+      state.presets = [];
+    }
+    populatePresetSelect();
+  }
+
+  dom.presetSelect.addEventListener('change', () => {
+    const p = state.presets.find((x) => x.name === dom.presetSelect.value);
+    if (!p) return;
+    dom.loginForm.username.value = p.username;
+    dom.loginForm.host.value = p.host;
+    dom.loginForm.port.value = p.port;
+    dom.loginForm.password.value = '';
+    dom.loginForm.password.focus();
+  });
+
+  dom.presetSave.addEventListener('click', async () => {
+    const fd = new FormData(dom.loginForm);
+    const username = String(fd.get('username') || '').trim();
+    const host = String(fd.get('host') || '').trim();
+    const port = Number(fd.get('port')) || 22;
+    if (!username || !host) {
+      dom.loginError.textContent = 'fill username and host first';
+      dom.loginError.hidden = false;
+      return;
+    }
+    const suggested = dom.presetSelect.value || `${username}@${host}`;
+    const name = window.prompt('Preset name:', suggested);
+    if (!name) return;
+    try {
+      const data = await Api.savePreset({ name, username, host, port });
+      state.presets = data.presets;
+      populatePresetSelect();
+      dom.presetSelect.value = name;
+      dom.loginError.hidden = true;
+    } catch (err) {
+      dom.loginError.textContent = err.message;
+      dom.loginError.hidden = false;
+    }
+  });
+
+  dom.presetDelete.addEventListener('click', async () => {
+    const name = dom.presetSelect.value;
+    if (!name) return;
+    if (!window.confirm(`Delete preset "${name}"?`)) return;
+    try {
+      const data = await Api.deletePreset(name);
+      state.presets = data.presets;
+      populatePresetSelect();
+      dom.presetSelect.value = '';
+    } catch (err) {
+      dom.loginError.textContent = err.message;
+      dom.loginError.hidden = false;
+    }
+  });
+
   // ---- Login ----
   function showLogin() {
     dom.loginError.hidden = true;
     dom.loginError.textContent = '';
+    refreshPresets();
     dom.loginDialog.showModal();
     setTimeout(() => dom.loginForm.username.focus(), 0);
   }

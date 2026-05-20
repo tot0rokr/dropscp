@@ -52,13 +52,21 @@
   <dialog id="login-dialog">
     <form id="login-form" method="dialog" autocomplete="off">
       <h3>Connect</h3>
+      <div class="preset-row">
+        <label>preset
+          <select id="preset-select"><option value="">(none)</option></select>
+        </label>
+        <button type="button" id="preset-delete" title="Delete selected preset">✕</button>
+      </div>
       <label>username <input name="username" required autocomplete="off" /></label>
       <label>host <input name="host" required autocomplete="off" placeholder="hostname or IP" /></label>
       <label>port <input name="port" type="number" min="1" max="65535" value="22" /></label>
       <label>password <input name="password" type="password" required /></label>
       <div class="row">
+        <button type="button" id="preset-save">Save as preset</button>
+        <span class="spacer"></span>
         <button type="button" id="login-cancel">Cancel</button>
-        <button type="submit">Connect</button>
+        <button type="submit" class="primary">Connect</button>
       </div>
       <div class="error" id="login-error" hidden></div>
     </form>

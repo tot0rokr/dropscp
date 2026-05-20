@@ -184,10 +184,30 @@ dialog::backdrop { background: rgba(0,0,0,0.25); }
 #login-form .row, .conflict-body .row {
   display: flex;
   gap: 0.5rem;
-  justify-content: flex-end;
+  align-items: center;
   margin-top: 0.5rem;
 }
+.conflict-body .row { justify-content: flex-end; }
+#login-form .spacer { flex: 1; }
 #login-form .error { color: #dc2626; font-size: 0.85em; }
+.preset-row {
+  display: flex;
+  align-items: end;
+  gap: 0.4rem;
+}
+.preset-row label { flex: 1; }
+.preset-row select {
+  padding: 0.35rem 0.4rem;
+  font: inherit;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: white;
+}
+.preset-row #preset-delete {
+  padding: 0.25rem 0.55rem;
+  color: #6b7280;
+}
+.preset-row #preset-delete:hover { color: #dc2626; }
 #conflict-message {
   margin: 0 0 0.75rem;
   color: #4b5563;

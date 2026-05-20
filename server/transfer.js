@@ -92,8 +92,14 @@ function snapshot(job) {
     transferredBytes: job.transferredBytes,
     totalFiles: job.totalFiles,
     doneFiles: job.doneFiles,
-    currentFiles: Array.from(job.currentFiles),
-    currentFile: job.currentFiles.values().next().value || '',
+    leaves: job.leaves.map((l) => ({
+      id: l.id,
+      name: l.name,
+      size: l.size,
+      transferred: l.transferred,
+      status: l.status,
+      error: l.error,
+    })),
     errors: job.errors.slice(),
     workers: job.workers,
     error: job.error,
@@ -131,8 +137,8 @@ function create({ direction, sessionId, items, workers }) {
     transferredBytes: 0,
     totalFiles: 0,
     doneFiles: 0,
-    currentFiles: new Set(),       // active leaf paths across workers
-    errors: [],                    // [{ src, message }]
+    leaves: [],                    // [{ id, name, src, dst, size, transferred, status, error }]
+    errors: [],                    // planning-stage errors (no leaf exists)
     error: null,                   // fatal batch-level error
     events: new EventEmitter(),
     _lastEmit: 0,
@@ -149,47 +155,77 @@ function get(id) {
 // ---- File-level transfer drivers ----
 function putFile(sftp, leaf, job) {
   return new Promise((resolve, reject) => {
-    job.currentFiles.add(leaf.dst);
+    leaf.status = 'active';
+    leaf.transferred = 0;
     let prev = 0;
     sftp.fastPut(leaf.src, leaf.dst, {
       step: (transferred) => {
         job.transferredBytes += (transferred - prev);
+        leaf.transferred = transferred;
         prev = transferred;
         emitProgress(job);
       },
     }, (err) => {
-      job.currentFiles.delete(leaf.dst);
-      if (err) reject(err); else resolve();
+      if (err) {
+        leaf.status = 'error';
+        leaf.error = err.message;
+        reject(err);
+      } else {
+        leaf.status = 'done';
+        leaf.transferred = leaf.size;
+        resolve();
+      }
     });
   });
 }
 
 function getFile(sftp, leaf, job) {
   return new Promise((resolve, reject) => {
-    job.currentFiles.add(leaf.src);
+    leaf.status = 'active';
+    leaf.transferred = 0;
     let prev = 0;
     sftp.fastGet(leaf.src, leaf.dst, {
       step: (transferred) => {
         job.transferredBytes += (transferred - prev);
+        leaf.transferred = transferred;
         prev = transferred;
         emitProgress(job);
       },
     }, (err) => {
-      job.currentFiles.delete(leaf.src);
-      if (err) reject(err); else resolve();
+      if (err) {
+        leaf.status = 'error';
+        leaf.error = err.message;
+        reject(err);
+      } else {
+        leaf.status = 'done';
+        leaf.transferred = leaf.size;
+        resolve();
+      }
     });
+  });
+}
+
+function pushLeaf(job, leaf) {
+  job.leaves.push({
+    id: job.leaves.length,
+    name: leaf.name,
+    src: leaf.src,
+    dst: leaf.dst,
+    size: leaf.size,
+    transferred: 0,
+    status: 'waiting',
+    error: null,
   });
 }
 
 // ---- Planning: expand items[] into leaf-file jobs and pre-create dest dirs ----
 async function planUpload(job, sftp) {
-  const leaves = [];
   for (const it of job.items) {
     let stat;
     try { stat = await fsp.stat(it.src); }
     catch (err) { job.errors.push({ src: it.src, message: 'stat failed: ' + err.message }); continue; }
     if (stat.isFile()) {
-      leaves.push({ src: it.src, dst: it.dst, size: stat.size });
+      pushLeaf(job, { src: it.src, dst: it.dst, size: stat.size, name: posixBasename(it.dst.replace(/\\/g, '/')) });
     } else if (stat.isDirectory()) {
       let files;
       try { files = await walkLocalDir(it.src); }
@@ -197,26 +233,24 @@ async function planUpload(job, sftp) {
       for (const f of files) {
         const rel = path.relative(it.src, f.path).split(path.sep).join('/');
         const remotePath = rel ? posixJoin(it.dst, rel) : it.dst;
-        leaves.push({ src: f.path, dst: remotePath, size: f.size });
+        pushLeaf(job, { src: f.path, dst: remotePath, size: f.size, name: posixBasename(remotePath) });
       }
     }
   }
   const dirs = new Set();
-  for (const l of leaves) dirs.add(posixDirname(l.dst));
+  for (const l of job.leaves) dirs.add(posixDirname(l.dst));
   for (const d of dirs) {
     try { await sftpEnsureDir(sftp, d); }
     catch (_) { /* surfaced per-leaf during putFile */ }
   }
-  return leaves;
 }
 
 async function planDownload(job, sftp) {
-  const leaves = [];
   for (const it of job.items) {
     const stat = await sftpStat(sftp, it.src);
     if (!stat) { job.errors.push({ src: it.src, message: 'remote not found' }); continue; }
     if (stat.isFile()) {
-      leaves.push({ src: it.src, dst: it.dst, size: stat.size });
+      pushLeaf(job, { src: it.src, dst: it.dst, size: stat.size, name: posixBasename(it.src) });
     } else if (stat.isDirectory()) {
       let files;
       try { files = await walkRemoteDir(sftp, it.src); }
@@ -226,17 +260,16 @@ async function planDownload(job, sftp) {
           ? f.path.slice(it.src.length + 1)
           : posixBasename(f.path);
         const localPath = path.join(it.dst, rel.split('/').join(path.sep));
-        leaves.push({ src: f.path, dst: localPath, size: f.size });
+        pushLeaf(job, { src: f.path, dst: localPath, size: f.size, name: posixBasename(f.path) });
       }
     }
   }
   const dirs = new Set();
-  for (const l of leaves) dirs.add(path.dirname(l.dst));
+  for (const l of job.leaves) dirs.add(path.dirname(l.dst));
   for (const d of dirs) {
     try { await fsp.mkdir(d, { recursive: true }); }
     catch (_) { /* surfaced per-leaf during getFile */ }
   }
-  return leaves;
 }
 
 // ---- Batch driver ----
@@ -249,15 +282,14 @@ async function start(job) {
     if (!channels.length) throw new Error('no SFTP channels available');
     job.workers = channels.length;
 
-    const leaves = (job.direction === 'upload')
-      ? await planUpload(job, channels[0])
-      : await planDownload(job, channels[0]);
+    if (job.direction === 'upload') await planUpload(job, channels[0]);
+    else await planDownload(job, channels[0]);
 
-    job.totalFiles = leaves.length;
-    job.totalBytes = leaves.reduce((s, l) => s + (l.size || 0), 0);
+    job.totalFiles = job.leaves.length;
+    job.totalBytes = job.leaves.reduce((s, l) => s + (l.size || 0), 0);
     emitProgress(job, true);
 
-    if (leaves.length === 0) {
+    if (job.leaves.length === 0) {
       complete(job, 'done', { ok: true, errors: job.errors });
       return;
     }
@@ -268,20 +300,19 @@ async function start(job) {
     async function worker(sftp) {
       while (true) {
         const i = idx++;
-        if (i >= leaves.length) return;
-        const leaf = leaves[i];
+        if (i >= job.leaves.length) return;
+        const leaf = job.leaves[i];
         try {
           await transferOne(sftp, leaf, job);
-        } catch (err) {
-          job.errors.push({ src: leaf.src, message: err.message });
+        } catch (_) {
+          // leaf.status/error already set inside putFile/getFile
         }
         job.doneFiles++;
         emitProgress(job, true);
       }
     }
 
-    // Don't spin up more workers than there's work for
-    const activeChannels = channels.slice(0, Math.min(channels.length, leaves.length));
+    const activeChannels = channels.slice(0, Math.min(channels.length, job.leaves.length));
     await Promise.all(activeChannels.map((sftp) => worker(sftp)));
 
     complete(job, 'done', { ok: true, errors: job.errors });

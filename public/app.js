@@ -58,6 +58,7 @@
     statusText:     $('#status-text'),
     statusMeta:     $('#status-meta'),
     progressFill:   $('#progress-fill'),
+    transferList:   $('#transfer-list'),
   };
 
   // ---- Path helpers ----
@@ -418,8 +419,81 @@
   }
 
   // ---- Progress UI ----
-  function showProgress() { dom.statusBar.hidden = false; dom.progressFill.style.width = '0%'; }
-  function hideProgress() { dom.statusBar.hidden = true; }
+  // Rows are mutated in place (by leaf.id) to avoid full re-render on each tick.
+  let leafRows = new Map();
+
+  function showProgress() {
+    leafRows = new Map();
+    dom.transferList.replaceChildren();
+    dom.statusBar.hidden = false;
+    dom.progressFill.style.width = '0%';
+    dom.statusText.textContent = 'Preparing…';
+    dom.statusMeta.textContent = '';
+  }
+  function hideProgress() {
+    dom.statusBar.hidden = true;
+    leafRows = new Map();
+    dom.transferList.replaceChildren();
+  }
+
+  function iconFor(/* leaf */) {
+    // Plain file icon for now; extension-based icons come in a follow-up commit.
+    return '📄';
+  }
+
+  function makeLeafRow(leaf) {
+    const li = document.createElement('li');
+    li.className = 'leaf';
+    li.dataset.id = String(leaf.id);
+    li.dataset.status = leaf.status;
+
+    const icon = document.createElement('span'); icon.className = 'leaf-icon'; icon.textContent = iconFor(leaf);
+    const name = document.createElement('span'); name.className = 'leaf-name'; name.textContent = leaf.name; name.title = leaf.name;
+    const bar = document.createElement('span'); bar.className = 'leaf-bar';
+    const fill = document.createElement('span'); fill.className = 'leaf-fill';
+    bar.appendChild(fill);
+    const meta = document.createElement('span'); meta.className = 'leaf-meta';
+
+    li.append(icon, name, bar, meta);
+    return { el: li, fill, meta, name };
+  }
+
+  function applyLeafState(entry, leaf) {
+    entry.el.dataset.status = leaf.status;
+    if (leaf.status === 'active') {
+      const pct = leaf.size > 0 ? (leaf.transferred / leaf.size) * 100 : 0;
+      entry.fill.style.width = pct.toFixed(0) + '%';
+      entry.meta.textContent = `${fmtSize(leaf.transferred)} / ${fmtSize(leaf.size)}`;
+      entry.meta.title = '';
+    } else if (leaf.status === 'done') {
+      entry.meta.textContent = fmtSize(leaf.size) + '  ✓';
+      entry.meta.title = '';
+    } else if (leaf.status === 'error') {
+      entry.meta.textContent = '✗ ' + (leaf.error || 'error');
+      entry.meta.title = leaf.error || '';
+    } else { // waiting
+      entry.fill.style.width = '0%';
+      entry.meta.textContent = fmtSize(leaf.size);
+      entry.meta.title = '';
+    }
+  }
+
+  function updateLeavesList(leaves) {
+    const frag = document.createDocumentFragment();
+    let appended = false;
+    for (const leaf of leaves) {
+      let entry = leafRows.get(leaf.id);
+      if (!entry) {
+        entry = makeLeafRow(leaf);
+        leafRows.set(leaf.id, entry);
+        frag.appendChild(entry.el);
+        appended = true;
+      }
+      applyLeafState(entry, leaf);
+    }
+    if (appended) dom.transferList.appendChild(frag);
+  }
+
   function updateProgress(snap) {
     const pct = snap.totalBytes > 0
       ? Math.min(100, (snap.transferredBytes / snap.totalBytes) * 100)
@@ -427,15 +501,17 @@
     dom.progressFill.style.width = pct.toFixed(1) + '%';
 
     const verb = snap.direction === 'upload' ? 'Uploading' : 'Downloading';
-    const active = (snap.currentFiles || []).map((p) => basename(p));
+    const counter = snap.totalFiles > 0 ? ` (${snap.doneFiles}/${snap.totalFiles})` : '';
+    const active = (snap.leaves || []).filter((l) => l.status === 'active');
     const activeLabel = active.length === 0
-      ? ''
+      ? (snap.totalFiles === 0 ? ' — planning…' : '')
       : active.length === 1
-        ? ` — ${active[0]}`
-        : ` — ${active[0]} (+${active.length - 1} more)`;
-    const fileCounter = snap.totalFiles > 1 ? ` (${snap.doneFiles}/${snap.totalFiles})` : '';
-    dom.statusText.textContent = `${verb}${fileCounter}${activeLabel}`;
+        ? ` — ${active[0].name}`
+        : ` — ${active[0].name} (+${active.length - 1} more)`;
+    dom.statusText.textContent = `${verb}${counter}${activeLabel}`;
     dom.statusMeta.textContent = `${fmtSize(snap.transferredBytes)} / ${fmtSize(snap.totalBytes)}  ${pct.toFixed(0)}%`;
+
+    if (snap.leaves && snap.leaves.length) updateLeavesList(snap.leaves);
   }
 
   function streamProgress(jobId, refreshSide, refreshDir) {
@@ -448,10 +524,17 @@
       });
       es.addEventListener('done', (e) => {
         es.close();
-        hideProgress();
         let data = {};
         try { data = JSON.parse(e.data); } catch (_) {}
-        const errs = (data.errors && data.errors.length) ? data.errors : (lastSnap && lastSnap.errors) || [];
+        // Apply final snapshot if present, then keep the panel open briefly so
+        // the user can see the final state (Esc / new transfer hides it).
+        const planErrs = (data.errors && data.errors.length) ? data.errors : (lastSnap && lastSnap.errors) || [];
+        const leafErrs = (lastSnap && lastSnap.leaves)
+          ? lastSnap.leaves.filter((l) => l.status === 'error').map((l) => ({ src: l.name, message: l.error || 'error' }))
+          : [];
+        const errs = planErrs.concat(leafErrs);
+        // Hide the panel; errors get surfaced via alert
+        hideProgress();
         if (errs.length) {
           const summary = errs.slice(0, 5).map((x) => `• ${basename(x.src)}: ${x.message}`).join('\n');
           const tail = errs.length > 5 ? `\n…and ${errs.length - 5} more` : '';

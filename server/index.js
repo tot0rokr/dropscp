@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const os = require('os');
 const { loadConfig } = require('./config');
 const sessions = require('./ssh-session');
 const localFs = require('./local-fs');
@@ -52,8 +53,9 @@ app.post('/api/mkdir', async (req, res) => {
 
 app.get('/api/local/ls', async (req, res) => {
   try {
-    const entries = await localFs.ls(req.query.path || process.cwd());
-    res.json({ entries, path: localFs.resolve(req.query.path || process.cwd()) });
+    const target = req.query.path || os.homedir();
+    const entries = await localFs.ls(target);
+    res.json({ entries, path: localFs.resolve(target) });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

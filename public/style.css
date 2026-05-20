@@ -1,0 +1,146 @@
+* { box-sizing: border-box; }
+
+html, body { margin: 0; height: 100%; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  color: #1f2937;
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid #d1d5db;
+  background: white;
+  border-radius: 4px;
+  font: inherit;
+  padding: 0.3rem 0.6rem;
+}
+button:hover { background: #f3f4f6; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* --- Topbar --- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: #1f2937;
+  color: #f9fafb;
+  border-bottom: 1px solid #111827;
+}
+.topbar .brand { font-weight: 700; letter-spacing: 0.02em; }
+.topbar .session-info {
+  flex: 1;
+  color: #d1d5db;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.85em;
+}
+.topbar button {
+  border-color: #4b5563;
+  background: #374151;
+  color: white;
+}
+.topbar button:hover { background: #4b5563; }
+
+/* --- Panes --- */
+.panes {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: #e5e7eb;
+  min-height: 0;
+}
+.pane {
+  background: white;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.pane > header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+.pane-title { font-weight: 600; color: #374151; }
+.path {
+  flex: 1;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.85em;
+  color: #4b5563;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;       /* keep tail visible when truncated */
+  text-align: left;
+}
+.actions { display: flex; gap: 0.25rem; }
+.actions button { padding: 0.2rem 0.5rem; font-size: 0.9em; }
+
+/* --- Tree --- */
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.tree li {
+  padding: 0.25rem 0.75rem;
+  display: flex;
+  gap: 0.4rem;
+  user-select: none;
+  align-items: center;
+}
+.tree li:hover { background: #eff6ff; }
+.tree li.dir { cursor: pointer; }
+.tree li.dir:hover { background: #dbeafe; }
+.tree .icon { width: 1.2em; text-align: center; flex-shrink: 0; }
+.tree .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree .size {
+  color: #9ca3af;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.tree .empty, .tree .error, .tree .loading {
+  color: #9ca3af;
+  padding: 0.5rem 0.75rem;
+  font-style: italic;
+}
+.tree .error { color: #dc2626; font-style: normal; }
+
+/* --- Login dialog --- */
+dialog#login-dialog {
+  border: none;
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+  min-width: 320px;
+}
+dialog#login-dialog::backdrop { background: rgba(0,0,0,0.25); }
+#login-form { display: flex; flex-direction: column; gap: 0.5rem; }
+#login-form h3 { margin: 0 0 0.5rem; }
+#login-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85em;
+  color: #4b5563;
+  gap: 0.2rem;
+}
+#login-form input {
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+#login-form input:focus { outline: 2px solid #93c5fd; outline-offset: -1px; }
+#login-form .row { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
+#login-form .error { color: #dc2626; font-size: 0.85em; }

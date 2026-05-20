@@ -3,24 +3,61 @@
 <head>
   <meta charset="UTF-8" />
   <title>dropscp</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-    code, pre { background: #f4f4f4; padding: 0.1em 0.3em; border-radius: 3px; }
-    pre { padding: 0.75rem; overflow-x: auto; }
-    h1 { margin-bottom: 0.25rem; }
-    .tag { display: inline-block; background: #e5e7eb; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.8rem; }
-  </style>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <h1>dropscp <span class="tag">M1</span></h1>
-  <p>Backend skeleton is running. UI lands in M2.</p>
+  <header class="topbar">
+    <div class="brand">dropscp</div>
+    <div class="session-info" id="session-info">not connected</div>
+    <button id="connect-btn">Connect</button>
+    <button id="disconnect-btn" hidden>Disconnect</button>
+  </header>
 
-  <h3>Quick smoke test</h3>
-  <pre>curl -X POST http://127.0.0.1:8765/api/connect \
-  -H "Content-Type: application/json" \
-  -d '{"username":"user","host":"10.0.0.5","password":"..."}'
+  <main class="panes">
+    <section class="pane" id="pane-remote">
+      <header>
+        <span class="pane-title">Remote</span>
+        <div class="path" id="remote-path" title="">—</div>
+        <div class="actions">
+          <button data-action="up" data-side="remote" title="Parent directory">..</button>
+          <button data-action="mkdir" data-side="remote" title="New folder">mkdir</button>
+          <button data-action="refresh" data-side="remote" title="Refresh">↻</button>
+        </div>
+      </header>
+      <ul class="tree" id="remote-tree">
+        <li class="empty">connect to a host to browse</li>
+      </ul>
+    </section>
 
-# then with the returned sessionId:
-curl "http://127.0.0.1:8765/api/ls?sessionId=...&path=."</pre>
+    <section class="pane" id="pane-local">
+      <header>
+        <span class="pane-title">Local</span>
+        <div class="path" id="local-path" title="">—</div>
+        <div class="actions">
+          <button data-action="up" data-side="local" title="Parent directory">..</button>
+          <button data-action="mkdir" data-side="local" title="New folder">mkdir</button>
+          <button data-action="refresh" data-side="local" title="Refresh">↻</button>
+        </div>
+      </header>
+      <ul class="tree" id="local-tree"></ul>
+    </section>
+  </main>
+
+  <dialog id="login-dialog">
+    <form id="login-form" method="dialog" autocomplete="off">
+      <h3>Connect</h3>
+      <label>username <input name="username" required autocomplete="off" /></label>
+      <label>host <input name="host" required autocomplete="off" placeholder="hostname or IP" /></label>
+      <label>port <input name="port" type="number" min="1" max="65535" value="22" /></label>
+      <label>password <input name="password" type="password" required /></label>
+      <div class="row">
+        <button type="button" id="login-cancel">Cancel</button>
+        <button type="submit">Connect</button>
+      </div>
+      <div class="error" id="login-error" hidden></div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
 </body>
 </html>

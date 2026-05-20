@@ -97,6 +97,38 @@ button.primary:hover { background: #1d4ed8; }
 }
 .topbar .tab-add { padding: 0.2rem 0.55rem; font-size: 1em; line-height: 1; }
 
+/* --- R2R toggle + host picker --- */
+.topbar .r2r-toggle {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.85em;
+  letter-spacing: 0.05em;
+}
+.topbar .r2r-toggle.active {
+  background: #f59e0b;
+  border-color: #d97706;
+  color: #1f2937;
+}
+.topbar .r2r-toggle:disabled { opacity: 0.4; }
+.r2r-host-select {
+  font: inherit;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.85em;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid #d97706;
+  border-radius: 4px;
+  background: #fffbeb;
+  color: #92400e;
+  max-width: 220px;
+}
+.pane#pane-local[data-side="r2r"] {
+  /* Subtle amber tint to remind user the right pane is r2r mode */
+  background: #fffbeb;
+}
+.pane#pane-local[data-side="r2r"] > header {
+  background: #fef3c7;
+  border-bottom-color: #fcd34d;
+}
+
 /* --- Panes --- */
 .panes {
   --split: 0.5;

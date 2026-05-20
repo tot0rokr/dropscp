@@ -10,6 +10,7 @@
     <div class="brand">dropscp</div>
     <div class="tabs" id="tabs" role="tablist"></div>
     <button id="connect-btn" class="tab-add" title="New connection">+</button>
+    <button id="r2r-toggle" class="r2r-toggle" title="Remote → Remote mode (needs 2+ tabs)" disabled>R2R</button>
   </header>
 
   <main class="panes">
@@ -32,7 +33,8 @@
 
     <section class="pane" id="pane-local" data-side="local">
       <header>
-        <span class="pane-title">Local</span>
+        <span class="pane-title" id="right-title">Local</span>
+        <select id="r2r-host-select" class="r2r-host-select" title="Pick destination host" hidden></select>
         <div class="path" id="local-path" title="">—</div>
         <div class="actions">
           <button data-action="up" data-side="local" title="Parent directory">..</button>

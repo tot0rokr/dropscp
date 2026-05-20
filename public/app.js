@@ -6,12 +6,16 @@
   }
   // state.tabs[i] = { session: { sessionId, username, host, port }, remote: emptyRemoteState() }
   // state.session and state.remote are LIVE references to the active tab; rebound on switch.
+  // R2R mode: state.r2rMode is true and state.r2rHost = { session, remote } points to the dst tab's
+  // session + a pane-state for the right side that mirrors a remote tree instead of local FS.
   const state = {
     tabs: [],
     activeIdx: -1,
     session: null,
     remote: emptyRemoteState(),
     local:  { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 },
+    r2rMode: false,
+    r2rHost: null,
     presets: [],
   };
 
@@ -35,6 +39,7 @@
     localLs:       (p)            => api('GET',  p ? `/api/local/ls?path=${encodeURIComponent(p)}` : '/api/local/ls'),
     localMkdir:    (p)            => api('POST', '/api/local/mkdir', { path: p }),
     startTransfer: (body)         => api('POST', '/api/transfer', body),
+    startR2R:      (body)         => api('POST', '/api/r2r', body),
     listPresets:   ()             => api('GET',  '/api/presets'),
     savePreset:    (p)            => api('POST', '/api/presets', p),
     deletePreset:  (name)         => api('POST', '/api/presets/delete', { name }),
@@ -67,6 +72,9 @@
     transferList:   $('#transfer-list'),
     panes:          $('.panes'),
     splitter:       $('#pane-splitter'),
+    r2rToggle:      $('#r2r-toggle'),
+    r2rHostSelect:  $('#r2r-host-select'),
+    rightTitle:     $('#right-title'),
   };
 
   // ---- Path helpers ----
@@ -142,7 +150,16 @@
   }
 
   // ---- Selection helpers ----
-  function paneState(side) { return side === 'remote' ? state.remote : state.local; }
+  function paneState(side) {
+    if (side === 'remote') return state.remote;
+    if (side === 'r2r') return state.r2rHost.remote;
+    return state.local;
+  }
+  function sessionIdForSide(side) {
+    if (side === 'remote') return state.session && state.session.sessionId;
+    if (side === 'r2r') return state.r2rHost && state.r2rHost.session.sessionId;
+    return null;
+  }
   function clearSelection(side) {
     const p = paneState(side);
     p.selected.clear();
@@ -178,7 +195,8 @@
     refreshSelectionClasses(side);
   }
   function rowPath(side, currentPath, name) {
-    return side === 'remote' ? posixJoin(currentPath, name) : joinLocal(currentPath, name);
+    // Both 'remote' and 'r2r' use POSIX paths; only 'local' uses Windows-ish joining.
+    return side === 'local' ? joinLocal(currentPath, name) : posixJoin(currentPath, name);
   }
 
   // ---- Rendering ----
@@ -301,32 +319,57 @@
     }
   }
 
+  async function loadR2R(p) {
+    if (!state.r2rHost) return;
+    clearSelection('r2r');
+    renderMessage(dom.localTree, 'loading', 'loading…');
+    try {
+      const data = await Api.remoteLs(state.r2rHost.session.sessionId, p || '.');
+      state.r2rHost.remote.path = data.path;
+      state.r2rHost.remote.entries = data.entries;
+      setPath(dom.localPath, data.path);
+      renderTree(dom.localTree, 'r2r', data.path, data.entries,
+        (e) => loadR2R(posixJoin(data.path, e.name)));
+    } catch (err) {
+      renderMessage(dom.localTree, 'error', 'r2r: ' + err.message);
+    }
+  }
+
+  function navigateSide(side, p) {
+    if (side === 'remote') return loadRemote(p);
+    if (side === 'r2r')    return loadR2R(p);
+    return loadLocal(p);
+  }
+
   // ---- Pane action buttons (..  mkdir  refresh) ----
+  // Read side from the button's data-side at event time so r2r mode (which
+  // flips the right pane's data-side to 'r2r') is picked up automatically.
   document.querySelectorAll('[data-action]').forEach((btn) => {
     btn.addEventListener('click', async (ev) => {
       ev.stopPropagation();
       const side = btn.dataset.side;
       const action = btn.dataset.action;
-      const isRemote = side === 'remote';
-      const pane = isRemote ? state.remote : state.local;
-      if (isRemote && !state.session) return;
+      if ((side === 'remote' || side === 'r2r') && !sessionIdForSide(side)) return;
+      const pane = paneState(side);
 
       if (action === 'up') {
         if (!pane.path) return;
-        const parent = isRemote ? posixParent(pane.path) : parentLocal(pane.path);
-        if (isRemote) loadRemote(parent); else loadLocal(parent);
+        const parent = side === 'local' ? parentLocal(pane.path) : posixParent(pane.path);
+        navigateSide(side, parent);
       } else if (action === 'refresh') {
-        if (isRemote) loadRemote(pane.path || '.');
-        else loadLocal(pane.path || undefined);
+        navigateSide(side, pane.path || (side === 'local' ? undefined : '.'));
       } else if (action === 'mkdir') {
         if (!pane.path) return;
         const name = window.prompt(`New folder name in:\n${pane.path}`);
         if (!name) return;
-        const target = isRemote ? posixJoin(pane.path, name) : joinLocal(pane.path, name);
+        const target = side === 'local' ? joinLocal(pane.path, name) : posixJoin(pane.path, name);
         try {
-          if (isRemote) await Api.remoteMkdir(state.session.sessionId, target);
-          else await Api.localMkdir(target);
-          if (isRemote) loadRemote(pane.path); else loadLocal(pane.path);
+          if (side === 'remote' || side === 'r2r') {
+            await Api.remoteMkdir(sessionIdForSide(side), target);
+          } else {
+            await Api.localMkdir(target);
+          }
+          navigateSide(side, pane.path);
         } catch (err) {
           window.alert('mkdir failed: ' + err.message);
         }
@@ -335,23 +378,25 @@
   });
 
   // ---- Click-on-background clears selection for that side ----
-  function setupBackgroundClick(paneEl, side) {
+  function setupBackgroundClick(paneEl) {
     paneEl.addEventListener('click', (ev) => {
       if (ev.target.closest('li[data-path]')) return;
       if (ev.target.closest('button')) return;
-      clearSelection(side);
+      if (ev.target.closest('select')) return;
+      clearSelection(paneEl.dataset.side);
     });
   }
-  setupBackgroundClick(dom.remotePane, 'remote');
-  setupBackgroundClick(dom.localPane, 'local');
+  setupBackgroundClick(dom.remotePane);
+  setupBackgroundClick(dom.localPane);
 
   // ---- Drag-and-drop wiring ----
-  function setupDropZone(paneEl, side) {
+  function setupDropZone(paneEl) {
     function clearHighlights() {
       paneEl.classList.remove('drag-into-pane');
       paneEl.querySelectorAll('.drag-over').forEach((el) => el.classList.remove('drag-over'));
     }
     paneEl.addEventListener('dragover', (ev) => {
+      const side = paneEl.dataset.side;
       ev.preventDefault();
       ev.dataTransfer.dropEffect = 'copy';
       const folderLi = ev.target.closest && ev.target.closest('li.dir');
@@ -367,6 +412,7 @@
       if (!paneEl.contains(ev.relatedTarget)) clearHighlights();
     });
     paneEl.addEventListener('drop', (ev) => {
+      const side = paneEl.dataset.side;
       ev.preventDefault();
       clearHighlights();
       let payload;
@@ -374,23 +420,21 @@
       catch { return; }
       if (!payload || !Array.isArray(payload.items) || payload.items.length === 0) return;
       if (payload.side === side) return;
-      if (side === 'remote' && !state.session) {
-        window.alert('connect to a remote host first');
-        return;
-      }
+      if (side === 'remote' && !state.session) { window.alert('connect to a remote host first'); return; }
+      if (side === 'r2r' && !state.r2rHost)   { window.alert('pick a destination host first'); return; }
       const folderLi = ev.target.closest && ev.target.closest('li.dir');
       let targetDir;
       if (folderLi && folderLi.dataset.side === side) {
         targetDir = folderLi.dataset.path;
       } else {
-        targetDir = (side === 'remote') ? state.remote.path : state.local.path;
+        targetDir = paneState(side).path;
       }
       if (!targetDir) return;
       initiateTransfer(payload.side, payload.items, side, targetDir);
     });
   }
-  setupDropZone(dom.remotePane, 'remote');
-  setupDropZone(dom.localPane, 'local');
+  setupDropZone(dom.remotePane);
+  setupDropZone(dom.localPane);
 
   // ---- Conflict dialog (batch-aware) ----
   function askBatchConflict(conflictNames, targetDir) {
@@ -420,14 +464,15 @@
   async function initiateTransfer(srcSide, srcItems, dstSide, dstDir) {
     // 1) Detect conflicts against dst dir listing
     let dstEntries = null;
-    const visible = (dstSide === 'remote') ? state.remote : state.local;
-    if (visible.path === dstDir) {
+    const visible = paneState(dstSide);
+    if (visible && visible.path === dstDir) {
       dstEntries = visible.entries;
     } else {
       try {
-        const data = (dstSide === 'remote')
-          ? await Api.remoteLs(state.session.sessionId, dstDir)
-          : await Api.localLs(dstDir);
+        let data;
+        if (dstSide === 'remote') data = await Api.remoteLs(sessionIdForSide('remote'), dstDir);
+        else if (dstSide === 'r2r') data = await Api.remoteLs(sessionIdForSide('r2r'), dstDir);
+        else data = await Api.localLs(dstDir);
         dstEntries = data.entries;
       } catch (_) { dstEntries = null; }
     }
@@ -447,21 +492,25 @@
     }
     if (!workingItems.length) return;
 
-    // 2) Build batch payload
-    const direction = (srcSide === 'local') ? 'upload' : 'download';
-    const items = workingItems.map((it) => ({
-      src: it.path,
-      dst: (dstSide === 'remote') ? posixJoin(dstDir, it.name) : joinLocal(dstDir, it.name),
-    }));
+    // 2) Build batch payload (path joiner depends on destination side)
+    const joinForDst = (dstSide === 'local') ? joinLocal : posixJoin;
+    const items = workingItems.map((it) => ({ src: it.path, dst: joinForDst(dstDir, it.name) }));
 
-    const originSessionId = state.session && state.session.sessionId;
+    const isR2R = (srcSide === 'remote' || srcSide === 'r2r')
+               && (dstSide === 'remote' || dstSide === 'r2r')
+               && srcSide !== dstSide;
     try {
-      const { jobId } = await Api.startTransfer({
-        direction,
-        sessionId: originSessionId,
-        items,
-      });
-      await streamProgress(jobId, dstSide, dstDir, originSessionId);
+      if (isR2R) {
+        const srcSessionId = sessionIdForSide(srcSide);
+        const dstSessionId = sessionIdForSide(dstSide);
+        const { jobId } = await Api.startR2R({ srcSessionId, dstSessionId, items });
+        await streamProgress(jobId, dstSide, dstDir, dstSessionId);
+      } else {
+        const direction = (srcSide === 'local') ? 'upload' : 'download';
+        const originSessionId = sessionIdForSide('remote');
+        const { jobId } = await Api.startTransfer({ direction, sessionId: originSessionId, items });
+        await streamProgress(jobId, dstSide, dstDir, originSessionId);
+      }
     } catch (err) {
       window.alert('transfer failed: ' + err.message);
     }
@@ -548,14 +597,17 @@
       : (snap.totalFiles > 0 ? (snap.doneFiles / snap.totalFiles) * 100 : 0);
     dom.progressFill.style.width = pct.toFixed(1) + '%';
 
-    const verb = snap.direction === 'upload' ? 'Uploading' : 'Downloading';
+    const verb = snap.direction === 'upload' ? 'Uploading'
+              : snap.direction === 'download' ? 'Downloading'
+              : 'Relaying';
     const counter = snap.totalFiles > 0 ? ` (${snap.doneFiles}/${snap.totalFiles})` : '';
     const active = (snap.leaves || []).filter((l) => l.status === 'active');
+    const labelFor = (l) => l.phase ? `${l.name} [${l.phase}]` : l.name;
     const activeLabel = active.length === 0
       ? (snap.totalFiles === 0 ? ' — planning…' : '')
       : active.length === 1
-        ? ` — ${active[0].name}`
-        : ` — ${active[0].name} (+${active.length - 1} more)`;
+        ? ` — ${labelFor(active[0])}`
+        : ` — ${labelFor(active[0])} (+${active.length - 1} more)`;
     dom.statusText.textContent = `${verb}${counter}${activeLabel}`;
     dom.statusMeta.textContent = `${fmtSize(snap.transferredBytes)} / ${fmtSize(snap.totalBytes)}  ${pct.toFixed(0)}%`;
 
@@ -586,10 +638,13 @@
           window.alert(`Transfer finished with ${errs.length} error(s):\n${summary}${tail}`);
         }
         // Tab-aware auto-refresh: only refresh if the user hasn't switched away
-        // from the originating tab/dir while the transfer was running.
+        // from the originating session/dir while the transfer was running.
         const activeSid = state.session && state.session.sessionId;
+        const r2rSid = state.r2rHost && state.r2rHost.session.sessionId;
         if (refreshSide === 'remote' && activeSid === originSessionId && state.remote.path === refreshDir) {
           loadRemote(state.remote.path);
+        } else if (refreshSide === 'r2r' && r2rSid === originSessionId && state.r2rHost.remote.path === refreshDir) {
+          loadR2R(state.r2rHost.remote.path);
         } else if (refreshSide === 'local' && state.local.path === refreshDir) {
           loadLocal(state.local.path);
         }
@@ -747,6 +802,7 @@
       renderTree(dom.remoteTree, 'remote', state.remote.path, state.remote.entries,
         (e) => loadRemote(posixJoin(state.remote.path, e.name)));
     }
+    refreshR2RAvailability();
   }
 
   async function closeTab(idx) {
@@ -759,6 +815,7 @@
       renderTabs();
       setPath(dom.remotePath, '');
       renderMessage(dom.remoteTree, 'empty', 'connect to a host to browse');
+      refreshR2RAvailability();
       return;
     }
     activateTab(Math.min(idx, state.tabs.length - 1));
@@ -828,6 +885,92 @@
       connectInFlight = false;
       setLoginBusy(false);
     }
+  });
+
+  // ---- R2R mode ----
+  function otherTabs() {
+    return state.tabs
+      .map((t, i) => ({ t, i }))
+      .filter(({ i }) => i !== state.activeIdx)
+      .map(({ t }) => t);
+  }
+  function populateR2RSelect() {
+    const sel = dom.r2rHostSelect;
+    const prevValue = sel.value;
+    sel.replaceChildren();
+    for (const t of otherTabs()) {
+      const opt = document.createElement('option');
+      opt.value = t.session.sessionId;
+      opt.textContent = sessionLabel(t.session);
+      sel.appendChild(opt);
+    }
+    if (state.r2rHost && otherTabs().some((t) => t.session.sessionId === state.r2rHost.session.sessionId)) {
+      sel.value = state.r2rHost.session.sessionId;
+    } else if (prevValue && otherTabs().some((t) => t.session.sessionId === prevValue)) {
+      sel.value = prevValue;
+    }
+  }
+
+  function setRightSide(toR2R) {
+    const localPane = dom.localPane;
+    const side = toR2R ? 'r2r' : 'local';
+    localPane.dataset.side = side;
+    localPane.querySelectorAll('[data-side]').forEach((el) => { el.dataset.side = side; });
+    dom.localTree.dataset.side = side;
+  }
+
+  async function enableR2R() {
+    const candidates = otherTabs();
+    if (candidates.length === 0) return; // toggle should be disabled, but guard anyway
+    const dstTab = candidates[0];
+    state.r2rMode = true;
+    state.r2rHost = { session: dstTab.session, remote: emptyRemoteState() };
+    setRightSide(true);
+    dom.rightTitle.hidden = true;
+    dom.r2rHostSelect.hidden = false;
+    populateR2RSelect();
+    dom.r2rToggle.classList.add('active');
+    await loadR2R('.');
+  }
+
+  function disableR2R() {
+    state.r2rMode = false;
+    state.r2rHost = null;
+    setRightSide(false);
+    dom.rightTitle.hidden = false;
+    dom.r2rHostSelect.hidden = true;
+    dom.r2rToggle.classList.remove('active');
+    // Restore local listing
+    loadLocal(state.local.path || undefined);
+  }
+
+  function refreshR2RAvailability() {
+    // Called whenever tab set or active tab changes.
+    const others = otherTabs();
+    dom.r2rToggle.disabled = others.length === 0;
+    if (state.r2rMode) {
+      if (!state.r2rHost || !others.some((t) => t.session.sessionId === state.r2rHost.session.sessionId)) {
+        // Current dst tab is gone (closed) or has become the active tab — turn off
+        disableR2R();
+      } else {
+        populateR2RSelect();
+      }
+    }
+  }
+
+  dom.r2rToggle.addEventListener('click', () => {
+    if (dom.r2rToggle.disabled) return;
+    if (state.r2rMode) disableR2R();
+    else enableR2R();
+  });
+
+  dom.r2rHostSelect.addEventListener('change', () => {
+    if (!state.r2rMode) return;
+    const sid = dom.r2rHostSelect.value;
+    const tab = state.tabs.find((t) => t.session.sessionId === sid);
+    if (!tab) return;
+    state.r2rHost = { session: tab.session, remote: emptyRemoteState() };
+    loadR2R('.');
   });
 
   // ---- Pane splitter (resizable divider) ----

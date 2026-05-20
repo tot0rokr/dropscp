@@ -791,11 +791,9 @@
   dom.loginForm.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     if (connectInFlight) return;
-    connectInFlight = true;
-    dom.loginError.hidden = true;
-    dom.loginError.textContent = '';
-    setLoginBusy(true);
 
+    // Read form values BEFORE disabling — disabled inputs are excluded from
+    // FormData per spec, which would silently send empty strings.
     const fd = new FormData(dom.loginForm);
     const creds = {
       username: String(fd.get('username') || '').trim(),
@@ -803,6 +801,11 @@
       port:     Number(fd.get('port')) || 22,
       password: String(fd.get('password') || ''),
     };
+
+    connectInFlight = true;
+    dom.loginError.hidden = true;
+    dom.loginError.textContent = '';
+    setLoginBusy(true);
     try {
       const data = await Api.connect(creds);
       const tab = {

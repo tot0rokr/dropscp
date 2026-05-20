@@ -39,14 +39,63 @@ button.primary:hover { background: #1d4ed8; }
   border-bottom: 1px solid #111827;
 }
 .topbar .brand { font-weight: 700; letter-spacing: 0.02em; }
-.topbar .session-info {
+.topbar button { border-color: #4b5563; background: #374151; color: white; }
+.topbar button:hover { background: #4b5563; }
+
+/* --- Tab bar --- */
+.tabs {
   flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  overflow-x: auto;
+  min-width: 0;
+}
+.tabs::-webkit-scrollbar { height: 4px; }
+.tabs::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 2px; }
+.tabs .tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem 0.25rem 0.6rem;
+  background: #374151;
+  border: 1px solid #4b5563;
+  border-radius: 4px;
   color: #d1d5db;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 0.85em;
+  cursor: pointer;
+  max-width: 220px;
+  flex-shrink: 0;
 }
-.topbar button { border-color: #4b5563; background: #374151; color: white; }
-.topbar button:hover { background: #4b5563; }
+.tabs .tab:hover { background: #4b5563; }
+.tabs .tab.active {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: white;
+}
+.tabs .tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tabs .tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2em;
+  height: 1.2em;
+  border-radius: 50%;
+  font-size: 0.95em;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.6;
+}
+.tabs .tab-close:hover {
+  background: rgba(255,255,255,0.18);
+  opacity: 1;
+}
+.topbar .tab-add { padding: 0.2rem 0.55rem; font-size: 1em; line-height: 1; }
 
 /* --- Panes --- */
 .panes {

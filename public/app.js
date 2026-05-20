@@ -1,9 +1,16 @@
 /* dropscp UI — vanilla JS, no build step */
 (() => {
   // ---- State ----
+  function emptyRemoteState() {
+    return { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 };
+  }
+  // state.tabs[i] = { session: { sessionId, username, host, port }, remote: emptyRemoteState() }
+  // state.session and state.remote are LIVE references to the active tab; rebound on switch.
   const state = {
+    tabs: [],
+    activeIdx: -1,
     session: null,
-    remote: { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 },
+    remote: emptyRemoteState(),
     local:  { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 },
     presets: [],
   };
@@ -36,9 +43,8 @@
   // ---- DOM ----
   const $ = (sel) => document.querySelector(sel);
   const dom = {
-    sessionInfo:    $('#session-info'),
+    tabs:           $('#tabs'),
     connectBtn:     $('#connect-btn'),
-    disconnectBtn:  $('#disconnect-btn'),
     loginDialog:    $('#login-dialog'),
     loginForm:      $('#login-form'),
     loginCancel:    $('#login-cancel'),
@@ -446,13 +452,14 @@
       dst: (dstSide === 'remote') ? posixJoin(dstDir, it.name) : joinLocal(dstDir, it.name),
     }));
 
+    const originSessionId = state.session && state.session.sessionId;
     try {
       const { jobId } = await Api.startTransfer({
         direction,
-        sessionId: state.session && state.session.sessionId,
+        sessionId: originSessionId,
         items,
       });
-      await streamProgress(jobId, dstSide, dstDir);
+      await streamProgress(jobId, dstSide, dstDir, originSessionId);
     } catch (err) {
       window.alert('transfer failed: ' + err.message);
     }
@@ -553,7 +560,7 @@
     if (snap.leaves && snap.leaves.length) updateLeavesList(snap.leaves);
   }
 
-  function streamProgress(jobId, refreshSide, refreshDir) {
+  function streamProgress(jobId, refreshSide, refreshDir, originSessionId) {
     return new Promise((resolve) => {
       const es = new EventSource(`/api/transfer/${jobId}/events`);
       showProgress();
@@ -565,21 +572,21 @@
         es.close();
         let data = {};
         try { data = JSON.parse(e.data); } catch (_) {}
-        // Apply final snapshot if present, then keep the panel open briefly so
-        // the user can see the final state (Esc / new transfer hides it).
         const planErrs = (data.errors && data.errors.length) ? data.errors : (lastSnap && lastSnap.errors) || [];
         const leafErrs = (lastSnap && lastSnap.leaves)
           ? lastSnap.leaves.filter((l) => l.status === 'error').map((l) => ({ src: l.name, message: l.error || 'error' }))
           : [];
         const errs = planErrs.concat(leafErrs);
-        // Hide the panel; errors get surfaced via alert
         hideProgress();
         if (errs.length) {
           const summary = errs.slice(0, 5).map((x) => `• ${basename(x.src)}: ${x.message}`).join('\n');
           const tail = errs.length > 5 ? `\n…and ${errs.length - 5} more` : '';
           window.alert(`Transfer finished with ${errs.length} error(s):\n${summary}${tail}`);
         }
-        if (refreshSide === 'remote' && state.session && state.remote.path === refreshDir) {
+        // Tab-aware auto-refresh: only refresh if the user hasn't switched away
+        // from the originating tab/dir while the transfer was running.
+        const activeSid = state.session && state.session.sessionId;
+        if (refreshSide === 'remote' && activeSid === originSessionId && state.remote.path === refreshDir) {
           loadRemote(state.remote.path);
         } else if (refreshSide === 'local' && state.local.path === refreshDir) {
           loadLocal(state.local.path);
@@ -681,6 +688,80 @@
     }
   });
 
+  // ---- Tabs (multi-host) ----
+  function sessionLabel(s) {
+    return s.port === 22 ? `${s.username}@${s.host}` : `${s.username}@${s.host}:${s.port}`;
+  }
+
+  function renderTabs() {
+    dom.tabs.replaceChildren();
+    state.tabs.forEach((tab, idx) => {
+      const el = document.createElement('div');
+      el.className = 'tab' + (idx === state.activeIdx ? ' active' : '');
+      el.dataset.idx = String(idx);
+      el.setAttribute('role', 'tab');
+      const label = document.createElement('span');
+      label.className = 'tab-label';
+      label.textContent = sessionLabel(tab.session);
+      label.title = `${sessionLabel(tab.session)}  (sftp)`;
+      const close = document.createElement('span');
+      close.className = 'tab-close';
+      close.textContent = '×';
+      close.title = 'Close tab';
+      el.append(label, close);
+      el.addEventListener('click', (ev) => {
+        if (ev.target === close) {
+          ev.stopPropagation();
+          closeTab(idx);
+        } else if (idx !== state.activeIdx) {
+          activateTab(idx);
+        }
+      });
+      dom.tabs.appendChild(el);
+    });
+  }
+
+  function bindActiveTab() {
+    if (state.activeIdx < 0 || state.activeIdx >= state.tabs.length) {
+      state.session = null;
+      state.remote = emptyRemoteState();
+      return;
+    }
+    const tab = state.tabs[state.activeIdx];
+    state.session = tab.session;
+    state.remote = tab.remote;
+  }
+
+  function activateTab(idx) {
+    state.activeIdx = idx;
+    bindActiveTab();
+    renderTabs();
+    if (state.remote.path === null) {
+      // First time on this tab — load home dir
+      loadRemote('.');
+    } else {
+      // Restore cached listing without an extra network call
+      setPath(dom.remotePath, state.remote.path);
+      renderTree(dom.remoteTree, 'remote', state.remote.path, state.remote.entries,
+        (e) => loadRemote(posixJoin(state.remote.path, e.name)));
+    }
+  }
+
+  async function closeTab(idx) {
+    const tab = state.tabs[idx];
+    try { await Api.disconnect(tab.session.sessionId); } catch (_) {}
+    state.tabs.splice(idx, 1);
+    if (state.tabs.length === 0) {
+      state.activeIdx = -1;
+      bindActiveTab();
+      renderTabs();
+      setPath(dom.remotePath, '');
+      renderMessage(dom.remoteTree, 'empty', 'connect to a host to browse');
+      return;
+    }
+    activateTab(Math.min(idx, state.tabs.length - 1));
+  }
+
   // ---- Login ----
   function showLogin() {
     dom.loginError.hidden = true;
@@ -703,34 +784,23 @@
     };
     try {
       const data = await Api.connect(creds);
-      state.session = {
-        sessionId: data.sessionId,
-        username: data.username,
-        host: data.host,
-        port: data.port,
+      const tab = {
+        session: {
+          sessionId: data.sessionId,
+          username: data.username,
+          host: data.host,
+          port: data.port,
+        },
+        remote: emptyRemoteState(),
       };
-      dom.sessionInfo.textContent = `${data.username}@${data.host}:${data.port}`;
-      dom.connectBtn.hidden = true;
-      dom.disconnectBtn.hidden = false;
+      state.tabs.push(tab);
       dom.loginDialog.close();
       dom.loginForm.reset();
-      await loadRemote('.');
+      activateTab(state.tabs.length - 1);
     } catch (err) {
       dom.loginError.textContent = err.message;
       dom.loginError.hidden = false;
     }
-  });
-
-  dom.disconnectBtn.addEventListener('click', async () => {
-    if (!state.session) return;
-    try { await Api.disconnect(state.session.sessionId); } catch (_) {}
-    state.session = null;
-    state.remote = { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 };
-    dom.sessionInfo.textContent = 'not connected';
-    setPath(dom.remotePath, '');
-    renderMessage(dom.remoteTree, 'empty', 'connect to a host to browse');
-    dom.connectBtn.hidden = false;
-    dom.disconnectBtn.hidden = true;
   });
 
   // ---- Init ----

@@ -18,7 +18,7 @@
 | Frontend | Static HTML/CSS/JS, no build step |
 | Auth | Username + password only (no SSH keys in v1) |
 | File ops | Drag-and-drop transfer + `mkdir`. No delete/rename. |
-| Remote ↔ remote | Try direct (src → dst via ssh); on failure auto-fall-back to local relay |
+| Remote ↔ remote | v1: local relay only (src → local temp → dst). Direct (`sshpass`) deferred — see F3 |
 | Config | JSON file at `%APPDATA%\dropscp\config.json` |
 | Host platform | Windows |
 | Password storage | **Never**. Re-entered each session. |
@@ -71,7 +71,7 @@
   dst, reusing the existing SFTP transfer engine. Temp files are deleted
   on completion (including failures).
 - Direct mode (src host runs `scp`/`sftp` straight to dst via `sshpass`)
-  is **deferred**; see §10.
+  is **deferred** — see *F3-deferred decisions* below.
 
 ### F3-deferred decisions (for the eventual direct-mode work)
 
@@ -106,16 +106,6 @@ When direct mode is added, these need to be resolved up front:
 - `+` opens login dialog; `×` closes a tab (terminates that SSH session).
 - Switching tabs preserves each host's current path and tree state.
 
-### F6. Resizable pane split
-
-- A draggable vertical splitter sits between the two panes.
-- Default split is 50 / 50.
-- Dragging the splitter resizes either side; the ratio is clamped to
-  roughly [0.1, 0.9] so neither pane disappears.
-- On window resize, both panes scale proportionally — the current
-  ratio is preserved.
-- Not persisted across reloads (resets to 50 / 50).
-
 ### F5. Configuration file
 
 Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
@@ -137,6 +127,16 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
   defaults.
 - Passwords are never written.
 
+### F6. Resizable pane split
+
+- A draggable vertical splitter sits between the two panes.
+- Default split is 50 / 50.
+- Dragging the splitter resizes either side; the ratio is clamped to
+  roughly [0.1, 0.9] so neither pane disappears.
+- On window resize, both panes scale proportionally — the current
+  ratio is preserved.
+- Not persisted across reloads (resets to 50 / 50).
+
 ## 4. Architecture
 
 ```
@@ -149,7 +149,7 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
                         ├─ POST /api/mkdir                  (remote)
                         ├─ POST /api/transfer               (start a batch; returns jobId)
                         ├─ GET  /api/transfer/:jobId/events (SSE progress/done/fail)
-                        ├─ POST /api/r2r                    (remote↔remote w/ auto-fallback)
+                        ├─ POST /api/r2r                    (remote↔remote via local relay; direct path deferred)
                         ├─ /api/presets                     (CRUD)
                         └─ /api/local/*                     (local filesystem)
 ```
@@ -169,38 +169,47 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
   ```
   `workers` is optional and clamps to `[1, transfer.workers]`.
 - Backend binds only `127.0.0.1`.
-- A startup token is required on every API call to defend against drive-by
-  requests from other local processes.
+- *(Planned, not yet implemented)* A startup token will accompany every
+  API call to defend against drive-by requests from other local
+  processes. See §6.
 
 ## 5. UI Sketch
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ [user@host1] [user@host2] [+]               [R2R mode]  │  tabs
-├──────────────────────┬──────────────────────────────────┤
-│ Remote: /home/kim    │ Local: C:\Users\me\...           │
-│ [..] [mkdir] [↻]     │ [..] [mkdir] [↻]                 │
-│  📁 projects         │  📁 Downloads                    │
-│  📁 logs             │  📄 file.txt                     │
-│  📄 readme.md        │                                  │
-├─────────────────────────────────────────────────────────┤
-│ Transfer: readme.md  ████████░░ 80%   cancel            │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ [user@host1] [user@host2] [+]                       [R2R]   │  tabs + R2R toggle
+├──────────────────────┬──┬──────────────────────────────────┤
+│ Remote: /home/kim    │  │ Local: C:\Users\me\...           │
+│ [..] [mkdir] [↻]     │  │ [..] [mkdir] [↻]                 │
+│  📁 projects         │  │  📁 Downloads                    │
+│  📁 logs             │  │  🖼 photo.png                    │
+│  📜 readme.md        │  │  📄 file.txt                     │
+├──────────────────────┴──┴──────────────────────────────────┤
+│ Uploading (3/20) — main.js  ████████░░ 40%   8M / 20M      │
+│  📜 main.js          ████████  done    12K                  │
+│  🖼 photo.png        ████░░░░  62%     1.2M / 2M            │
+│  🗜 archive.tar.gz   ░░░░░░░░  wait    5M                   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-In R2R mode the right pane shows the second remote host instead of local.
+The thin gap between panes is the draggable splitter (F6). In R2R mode
+the right pane is replaced by a second remote host (picked via a
+dropdown that appears in that pane's header).
 
 ## 6. Security
 
-- Backend bound to `127.0.0.1` only.
-- Passwords held in memory only — never written to disk, never logged.
-- Host key handling: on first connect, store fingerprint in a known-hosts file
-  under the config directory. Warn on mismatch.
+- Backend bound to `127.0.0.1` only. ✅
+- Passwords held in memory only — never written to disk, never logged. ✅
+- **Host key handling** *(planned, not yet implemented)*. On first connect,
+  store the fingerprint in a known-hosts file under the config directory;
+  warn on mismatch. Currently uses `ssh2`'s defaults.
 - R2R direct mode (deferred; see F3) uses `sshpass` with the password
   passed via env var (not as a CLI argument). If `sshpass` is not present
   on src, fall back to local relay. v1 always runs the relay path.
-- A per-launch token must accompany every API request (passed as a query
-  parameter on the initial page open).
+- **Per-launch token** *(planned, not yet implemented)*. A token will
+  accompany every API request (passed as a query parameter on the
+  initial page open) to defend against drive-by requests from other
+  local processes.
 
 ## 7. Out of Scope (v1)
 
@@ -227,6 +236,8 @@ In R2R mode the right pane shows the second remote host instead of local.
 
 ## 9. Dependencies
 
-- `express`, `ssh2`, `ws`
-- Optional on remote src host: `sshpass` (enables R2R direct mode; absent →
-  local-relay fallback).
+- Runtime: `express`, `ssh2`. (Progress streaming uses native SSE via
+  `EventSource`, not WebSockets.)
+- Optional on remote src host, **only when M8 ships**: `sshpass` (enables
+  R2R direct mode; absent → local-relay fallback). v1 doesn't shell out
+  at all.

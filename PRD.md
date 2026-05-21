@@ -2,8 +2,7 @@
 
 ## 1. Background & Goals
 
-- WinSCP is blocked by corporate security software; manually typing `scp` for
-  every transfer is tedious.
+- Manually typing `scp` for every transfer is tedious.
 - Goal: a browser-based tool with **side-by-side file trees** and
   **drag-and-drop** transfers between local and remote hosts.
 - Top non-functional priority: **simplicity and maintainability**. Features are

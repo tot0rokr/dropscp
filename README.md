@@ -6,9 +6,9 @@ A browser-based SFTP file manager. Two side-by-side panes, drag-and-drop
 between local and remote (and remote↔remote), multiple host tabs, batched
 parallel transfers over a single SSH connection.
 
-Built because WinSCP is blocked by the IT shop and typing `scp` by hand for
-every file is tiring. Single-user, runs entirely on `127.0.0.1`. No SSH
-keys (v1) — username + password only, password never persisted.
+Built because typing `scp` by hand for every file is tiring. Single-user,
+runs entirely on `127.0.0.1`. No SSH keys (v1) — username + password only,
+password never persisted.
 
 ## Quick start
 

@@ -1,5 +1,7 @@
 # dropscp
 
+*[한국어 문서 →](README.ko.md)*
+
 A browser-based SFTP file manager. Two side-by-side panes, drag-and-drop
 between local and remote (and remote↔remote), multiple host tabs, batched
 parallel transfers over a single SSH connection.

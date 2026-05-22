@@ -20,7 +20,7 @@
 | Remote ↔ remote | v1: local relay only (src → local temp → dst). Direct (`sshpass`) deferred — see F3 |
 | Config | JSON file at `%APPDATA%\dropscp\config.json` |
 | Host platform | Windows |
-| Password storage | **Never**. Re-entered each session. |
+| Password storage | **Backend process memory only**, retained for the lifetime of the session so the backend can auto-reconnect on idle/network drop (see F7). Never written to disk, never logged, never exposed in API responses. |
 
 ## 3. Functional Requirements
 
@@ -136,6 +136,31 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
   ratio is preserved.
 - Not persisted across reloads (resets to 50 / 50).
 
+### F7. Auto-reconnect on idle/network drop
+
+- A session is created with `POST /api/connect`. The backend retains the
+  password in process memory (never disk, never response body) so it can
+  silently reconnect if the underlying SSH connection drops (idle timeout,
+  network blip, VPN reconnect).
+- ssh2 `error` / `close` / `end` events mark the session as `dead`. The
+  `sessionId` slot is **kept**; only the inner `Client` is replaced on
+  reconnect, so tab references, R2R pairings, and in-flight UI state stay
+  intact.
+- Reconnect is **lazy**: it triggers on the next remote API call (ls,
+  mkdir, transfer start, …) via an internal `ensureAlive` helper.
+  Concurrent requests that hit a dead session share a single reconnect
+  promise.
+- UI: a dead tab is recoloured (red border) so the user can see the
+  state. Pressing **Refresh** on a dead tab re-runs the listing, which
+  in turn triggers the lazy reconnect — no separate "reconnect" button.
+- Explicit `POST /api/disconnect` still deletes the slot — that is not a
+  reconnect candidate.
+- New endpoint: `GET /api/session/status?sessionId=…` →
+  `{ status: "connected" | "dead" | "reconnecting" }`.
+- Out of scope here: mid-stream retry inside a running transfer (a
+  dropped transfer fails, the user restarts it and the next call
+  reconnects). See M9.
+
 ## 4. Architecture
 
 ```
@@ -149,6 +174,7 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
                         ├─ POST /api/transfer               (start a batch; returns jobId)
                         ├─ GET  /api/transfer/:jobId/events (SSE progress/done/fail)
                         ├─ POST /api/r2r                    (remote↔remote via local relay; direct path deferred)
+                        ├─ GET  /api/session/status         (connected | dead | reconnecting — see F7)
                         ├─ /api/presets                     (CRUD)
                         └─ /api/local/*                     (local filesystem)
 ```
@@ -198,7 +224,11 @@ dropdown that appears in that pane's header).
 ## 6. Security
 
 - Backend bound to `127.0.0.1` only. ✅
-- Passwords held in memory only — never written to disk, never logged. ✅
+- Passwords held in **backend process memory** only — never written to
+  disk, never logged, never sent back to the client. The password is
+  retained for the session's lifetime to support auto-reconnect (F7);
+  it is dropped when the session is explicitly disconnected or the
+  backend process exits.
 - **Host key handling** *(planned, not yet implemented)*. On first connect,
   store the fingerprint in a known-hosts file under the config directory;
   warn on mismatch. Currently uses `ssh2`'s defaults.
@@ -214,7 +244,10 @@ dropdown that appears in that pane's header).
 
 - SSH key authentication.
 - File delete / rename / edit / preview.
-- Multi-user, authentication, sessions across restarts.
+- Mid-stream retry of an in-flight transfer when the session drops
+  (the next user-initiated call reconnects; see F7).
+- Multi-user, authentication, sessions across restarts (the in-memory
+  password is lost when the backend process exits).
 - HTTPS, external deployment.
 - Mobile UI.
 - Transfer queue prioritization (within a batch, items are FIFO across
@@ -232,6 +265,7 @@ dropdown that appears in that pane's header).
 | M6 | Multi-tab | Two remote hosts open simultaneously |
 | M7 | R2R via local relay only | A file copies src → local temp → dst; temp cleaned up; errors surfaced per leaf |
 | M8 (deferred) | R2R direct via `sshpass` | See §3 F3-deferred decisions |
+| M9 | Auto-reconnect on idle/network drop (F7) | A killed sshd session reconnects on next ls/transfer; tab turns red while dead and recovers; concurrent dead-session requests share a single reconnect |
 
 ## 9. Dependencies
 

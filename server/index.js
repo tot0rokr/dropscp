@@ -35,6 +35,11 @@ app.post('/api/disconnect', (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/session/status', (req, res) => {
+  const status = sessions.getStatus(req.query.sessionId);
+  res.json({ status });
+});
+
 app.get('/api/ls', async (req, res) => {
   try {
     const result = await sessions.ls(req.query.sessionId, req.query.path || '.');

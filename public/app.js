@@ -20,6 +20,12 @@
   };
 
   // ---- API ----
+  function extractSessionId(url, body) {
+    const m = /[?&]sessionId=([^&]+)/.exec(url);
+    if (m) return decodeURIComponent(m[1]);
+    if (body && typeof body === 'object' && body.sessionId) return body.sessionId;
+    return null;
+  }
   async function api(method, url, body) {
     const opts = { method, headers: {} };
     if (body !== undefined) {
@@ -28,12 +34,22 @@
     }
     const res = await fetch(url, opts);
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (!res.ok) {
+      // Anything that quacks like a session-level failure: refresh the tab's
+      // health flag so the UI can turn the tab red.
+      const sid = extractSessionId(url, body);
+      const msg = String(data.error || '');
+      if (sid && /session|reconnect|connect|ssh|timeout|ECONNRE|EHOSTUN|ETIMEDOUT/i.test(msg)) {
+        pollSessionStatus(sid);
+      }
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
     return data;
   }
   const Api = {
     connect:       (creds)        => api('POST', '/api/connect', creds),
     disconnect:    (sessionId)    => api('POST', '/api/disconnect', { sessionId }),
+    sessionStatus: (sid)          => api('GET',  `/api/session/status?sessionId=${encodeURIComponent(sid)}`),
     remoteLs:      (sid, p)       => api('GET',  `/api/ls?sessionId=${encodeURIComponent(sid)}&path=${encodeURIComponent(p)}`),
     remoteMkdir:   (sid, p)       => api('POST', '/api/mkdir', { sessionId: sid, path: p }),
     localLs:       (p)            => api('GET',  p ? `/api/local/ls?path=${encodeURIComponent(p)}` : '/api/local/ls'),
@@ -44,6 +60,28 @@
     savePreset:    (p)            => api('POST', '/api/presets', p),
     deletePreset:  (name)         => api('POST', '/api/presets/delete', { name }),
   };
+
+  // ---- Tab health (auto-reconnect feedback) ----
+  function setTabStatus(sessionId, status) {
+    let changed = false;
+    for (const tab of state.tabs) {
+      if (tab.session.sessionId === sessionId && tab.status !== status) {
+        tab.status = status;
+        changed = true;
+      }
+    }
+    if (changed) renderTabs();
+  }
+  async function pollSessionStatus(sessionId) {
+    try {
+      const r = await api('GET', `/api/session/status?sessionId=${encodeURIComponent(sessionId)}`);
+      // 'missing' means the server has dropped the slot entirely — leave the
+      // UI alone; closeTab handles that case via its own cleanup.
+      if (r.status === 'connected' || r.status === 'dead' || r.status === 'reconnecting') {
+        setTabStatus(sessionId, r.status);
+      }
+    } catch (_) { /* ignore — polling is best-effort */ }
+  }
 
   // ---- DOM ----
   const $ = (sel) => document.querySelector(sel);
@@ -292,13 +330,17 @@
     if (!state.session) return;
     clearSelection('remote');
     renderMessage(dom.remoteTree, 'loading', 'loading…');
+    const sid = state.session.sessionId;
     try {
-      const data = await Api.remoteLs(state.session.sessionId, p || '.');
+      const data = await Api.remoteLs(sid, p || '.');
       state.remote.path = data.path;
       state.remote.entries = data.entries;
       setPath(dom.remotePath, data.path);
       renderTree(dom.remoteTree, 'remote', data.path, data.entries,
         (e) => loadRemote(posixJoin(data.path, e.name)));
+      // ls succeeded — if the tab was marked dead/reconnecting, the lazy
+      // backend reconnect just brought it back. Reflect that.
+      setTabStatus(sid, 'connected');
     } catch (err) {
       renderMessage(dom.remoteTree, 'error', 'remote: ' + err.message);
     }
@@ -357,6 +399,10 @@
         const parent = side === 'local' ? parentLocal(pane.path) : posixParent(pane.path);
         navigateSide(side, parent);
       } else if (action === 'refresh') {
+        // If the active tab might be dead, poll status alongside the reload so
+        // the UI can update its colour as soon as the reconnect resolves.
+        const sid = sessionIdForSide(side);
+        if (sid) pollSessionStatus(sid);
         navigateSide(side, pane.path || (side === 'local' ? undefined : '.'));
       } else if (action === 'mkdir') {
         if (!pane.path) return;
@@ -754,13 +800,20 @@
     dom.tabs.replaceChildren();
     state.tabs.forEach((tab, idx) => {
       const el = document.createElement('div');
-      el.className = 'tab' + (idx === state.activeIdx ? ' active' : '');
+      let cls = 'tab';
+      if (idx === state.activeIdx) cls += ' active';
+      if (tab.status === 'dead') cls += ' disconnected';
+      else if (tab.status === 'reconnecting') cls += ' reconnecting';
+      el.className = cls;
       el.dataset.idx = String(idx);
       el.setAttribute('role', 'tab');
       const label = document.createElement('span');
       label.className = 'tab-label';
-      label.textContent = sessionLabel(tab.session);
-      label.title = `${sessionLabel(tab.session)}  (sftp)`;
+      const prefix = tab.status === 'dead' ? '⚠ ' : (tab.status === 'reconnecting' ? '↻ ' : '');
+      label.textContent = prefix + sessionLabel(tab.session);
+      label.title = tab.status === 'dead'
+        ? `${sessionLabel(tab.session)} — disconnected; press Refresh to reconnect`
+        : `${sessionLabel(tab.session)}  (sftp)`;
       const close = document.createElement('span');
       close.className = 'tab-close';
       close.textContent = '×';
@@ -873,6 +926,7 @@
           port: data.port,
         },
         remote: emptyRemoteState(),
+        status: 'connected',
       };
       state.tabs.push(tab);
       dom.loginDialog.close();

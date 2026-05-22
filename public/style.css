@@ -74,6 +74,21 @@ button.primary:hover { background: #1d4ed8; }
   border-color: #1d4ed8;
   color: white;
 }
+.tabs .tab.disconnected {
+  background: #7f1d1d;
+  border-color: #ef4444;
+  color: #fecaca;
+}
+.tabs .tab.disconnected.active {
+  background: #b91c1c;
+  border-color: #fca5a5;
+  color: white;
+}
+.tabs .tab.reconnecting {
+  background: #92400e;
+  border-color: #f59e0b;
+  color: #fde68a;
+}
 .tabs .tab-label {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -56,6 +56,7 @@
     localMkdir:    (p)            => api('POST', '/api/local/mkdir', { path: p }),
     startTransfer: (body)         => api('POST', '/api/transfer', body),
     startR2R:      (body)         => api('POST', '/api/r2r', body),
+    fileop:        (body)         => api('POST', '/api/fileop', body),
     listPresets:   ()             => api('GET',  '/api/presets'),
     savePreset:    (p)            => api('POST', '/api/presets', p),
     deletePreset:  (name)         => api('POST', '/api/presets/delete', { name }),
@@ -203,6 +204,22 @@
     p.selected.clear();
     p.anchorIdx = -1;
     refreshSelectionClasses(side);
+    updateActionButtons();
+  }
+
+  function updateActionButtons() {
+    for (const paneEl of [dom.remotePane, dom.localPane]) {
+      const side = paneEl.dataset.side;
+      const p = paneState(side);
+      if (!p) continue;
+      const count = p.selected.size;
+      paneEl.querySelectorAll('[data-action="delete"], [data-action="copy"]').forEach((b) => {
+        b.disabled = count < 1;
+      });
+      paneEl.querySelectorAll('[data-action="rename"]').forEach((b) => {
+        b.disabled = count !== 1;
+      });
+    }
   }
   function refreshSelectionClasses(side) {
     const ul = side === 'remote' ? dom.remoteTree : dom.localTree;
@@ -231,6 +248,7 @@
       p.anchorIdx = idx;
     }
     refreshSelectionClasses(side);
+    updateActionButtons();
   }
   function rowPath(side, currentPath, name) {
     // Both 'remote' and 'r2r' use POSIX paths; only 'local' uses Windows-ish joining.
@@ -383,9 +401,154 @@
     return loadLocal(p);
   }
 
-  // ---- Pane action buttons (..  mkdir  refresh) ----
+  // ---- Pane action buttons (..  mkdir  refresh  delete  rename  copy) ----
   // Read side from the button's data-side at event time so r2r mode (which
   // flips the right pane's data-side to 'r2r') is picked up automatically.
+  function backendSide(side) {
+    return side === 'local' ? 'local' : 'remote';
+  }
+
+  function fileopBody(side, op, extra) {
+    const body = Object.assign({ side: backendSide(side), op }, extra);
+    if (side === 'remote' || side === 'r2r') body.sessionId = sessionIdForSide(side);
+    return body;
+  }
+
+  function generateCopyName(originalName, existingNames) {
+    // Insert "(copy)" before the extension (Windows-style); bump number on collision.
+    const dot = originalName.lastIndexOf('.');
+    const hasExt = dot > 0;
+    const stem = hasExt ? originalName.slice(0, dot) : originalName;
+    const ext = hasExt ? originalName.slice(dot) : '';
+    for (let i = 1; i < 1000; i++) {
+      const candidate = i === 1 ? `${stem} (copy)${ext}` : `${stem} (copy ${i})${ext}`;
+      if (!existingNames.has(candidate)) return candidate;
+    }
+    return `${stem} (copy ${Date.now()})${ext}`;
+  }
+
+  async function doDelete(side) {
+    const pane = paneState(side);
+    if (pane.selected.size === 0) return;
+    const paths = Array.from(pane.selected);
+    const msg = paths.length === 1
+      ? `Delete "${basename(paths[0])}" permanently?\nDirectories are removed recursively.`
+      : `Delete ${paths.length} items permanently?\nDirectories are removed recursively.`;
+    if (!window.confirm(msg)) return;
+    try {
+      const res = await Api.fileop(fileopBody(side, 'delete', { paths }));
+      if (res.errors && res.errors.length) {
+        const sample = res.errors.slice(0, 5).map((e) => `• ${basename(e.path)}: ${e.message}`).join('\n');
+        const tail = res.errors.length > 5 ? `\n…and ${res.errors.length - 5} more` : '';
+        window.alert(`Deleted ${res.count}, ${res.errors.length} failed:\n${sample}${tail}`);
+      }
+    } catch (err) {
+      window.alert('Delete failed: ' + err.message);
+    }
+    navigateSide(side, pane.path);
+  }
+
+  async function doRename(side) {
+    const pane = paneState(side);
+    if (pane.selected.size !== 1) return;
+    const fullPath = Array.from(pane.selected)[0];
+    const oldName = basename(fullPath);
+    const newName = window.prompt('New name:', oldName);
+    if (!newName || newName === oldName) return;
+    if (/[\\/]/.test(newName)) { window.alert('name cannot contain / or \\'); return; }
+    const parent = pane.path;
+    const dst = side === 'local' ? joinLocal(parent, newName) : posixJoin(parent, newName);
+    try {
+      await Api.fileop(fileopBody(side, 'rename', { src: fullPath, dst }));
+    } catch (err) {
+      window.alert('Rename failed: ' + err.message);
+    }
+    navigateSide(side, parent);
+  }
+
+  async function doCopy(side) {
+    const pane = paneState(side);
+    if (pane.selected.size === 0) return;
+    const existing = new Set(pane.entries.map((e) => e.name));
+    const paths = Array.from(pane.selected);
+    const errors = [];
+    for (const fullPath of paths) {
+      const oldName = basename(fullPath);
+      const newName = generateCopyName(oldName, existing);
+      existing.add(newName);
+      const dst = side === 'local' ? joinLocal(pane.path, newName) : posixJoin(pane.path, newName);
+      try {
+        await Api.fileop(fileopBody(side, 'copy', { src: fullPath, dst }));
+      } catch (err) {
+        errors.push(`${oldName}: ${err.message}`);
+      }
+    }
+    if (errors.length) {
+      const sample = errors.slice(0, 5).join('\n');
+      const tail = errors.length > 5 ? `\n…and ${errors.length - 5} more` : '';
+      window.alert(`Copy errors:\n${sample}${tail}`);
+    }
+    navigateSide(side, pane.path);
+  }
+
+  async function doMove(side, items, dstDir) {
+    if (!items.length) return;
+    const pane = paneState(side);
+    // No-op if every item already lives in the drop target.
+    const parentOf = (p) => side === 'local'
+      ? p.replace(/[\\/][^\\/]+$/, '') || pane.path
+      : posixParent(p);
+    const allHere = items.every((it) => parentOf(it.path) === dstDir);
+    if (allHere) return;
+
+    // Conflict detection against the destination listing.
+    let dstEntries = null;
+    if (pane.path === dstDir) dstEntries = pane.entries;
+    else {
+      try {
+        const data = side === 'local'
+          ? await Api.localLs(dstDir)
+          : await Api.remoteLs(sessionIdForSide(side), dstDir);
+        dstEntries = data.entries;
+      } catch (_) {}
+    }
+    let workingItems = items.slice();
+    if (dstEntries) {
+      const names = new Set(dstEntries.map((e) => e.name));
+      const conflicts = workingItems.filter((it) => names.has(it.name));
+      if (conflicts.length) {
+        const action = await askBatchConflict(conflicts.map((c) => c.name), dstDir);
+        if (action === 'cancel') return;
+        if (action === 'skip') {
+          const set = new Set(conflicts.map((c) => c.name));
+          workingItems = workingItems.filter((it) => !set.has(it.name));
+        }
+        // 'overwrite' is not a thing for rename — it would error. Treat as skip.
+        if (action === 'overwrite') {
+          const set = new Set(conflicts.map((c) => c.name));
+          workingItems = workingItems.filter((it) => !set.has(it.name));
+        }
+      }
+    }
+    if (!workingItems.length) { navigateSide(side, pane.path); return; }
+
+    const errors = [];
+    for (const it of workingItems) {
+      const dst = side === 'local' ? joinLocal(dstDir, it.name) : posixJoin(dstDir, it.name);
+      try {
+        await Api.fileop(fileopBody(side, 'move', { src: it.path, dst }));
+      } catch (err) {
+        errors.push(`${it.name}: ${err.message}`);
+      }
+    }
+    if (errors.length) {
+      const sample = errors.slice(0, 5).join('\n');
+      const tail = errors.length > 5 ? `\n…and ${errors.length - 5} more` : '';
+      window.alert(`Move errors:\n${sample}${tail}`);
+    }
+    navigateSide(side, pane.path);
+  }
+
   document.querySelectorAll('[data-action]').forEach((btn) => {
     btn.addEventListener('click', async (ev) => {
       ev.stopPropagation();
@@ -419,6 +582,12 @@
         } catch (err) {
           window.alert('mkdir failed: ' + err.message);
         }
+      } else if (action === 'delete') {
+        await doDelete(side);
+      } else if (action === 'rename') {
+        await doRename(side);
+      } else if (action === 'copy') {
+        await doCopy(side);
       }
     });
   });
@@ -465,7 +634,6 @@
       try { payload = JSON.parse(ev.dataTransfer.getData('application/json')); }
       catch { return; }
       if (!payload || !Array.isArray(payload.items) || payload.items.length === 0) return;
-      if (payload.side === side) return;
       if (side === 'remote' && !state.session) { window.alert('connect to a remote host first'); return; }
       if (side === 'r2r' && !state.r2rHost)   { window.alert('pick a destination host first'); return; }
       const folderLi = ev.target.closest && ev.target.closest('li.dir');
@@ -476,6 +644,13 @@
         targetDir = paneState(side).path;
       }
       if (!targetDir) return;
+      // Same pane (local→local, remote→remote on the active host, r2r→r2r):
+      // intra-host move, not a transfer. Dropping back into the same parent is
+      // a no-op (doMove handles that).
+      if (payload.side === side) {
+        doMove(side, payload.items, targetDir);
+        return;
+      }
       initiateTransfer(payload.side, payload.items, side, targetDir);
     });
   }

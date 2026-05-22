@@ -16,7 +16,7 @@
 | Backend | Node.js + Express + `ssh2` |
 | Frontend | Static HTML/CSS/JS, no build step |
 | Auth | Username + password only (no SSH keys in v1) |
-| File ops | Drag-and-drop transfer + `mkdir`. No delete/rename. |
+| File ops | Drag-and-drop transfer + `mkdir`. Same-host **move / rename / delete / copy** (see F8). |
 | Remote ↔ remote | v1: local relay only (src → local temp → dst). Direct (`sshpass`) deferred — see F3 |
 | Config | JSON file at `%APPDATA%\dropscp\config.json` |
 | Host platform | Windows |
@@ -147,9 +147,9 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
   reconnect, so tab references, R2R pairings, and in-flight UI state stay
   intact.
 - Reconnect is **lazy**: it triggers on the next remote API call (ls,
-  mkdir, transfer start, …) via an internal `ensureAlive` helper.
-  Concurrent requests that hit a dead session share a single reconnect
-  promise.
+  mkdir, transfer start, fileop, …) via an internal `ensureAlive`
+  helper. Concurrent requests that hit a dead session share a single
+  reconnect promise.
 - UI: a dead tab is recoloured (red border) so the user can see the
   state. Pressing **Refresh** on a dead tab re-runs the listing, which
   in turn triggers the lazy reconnect — no separate "reconnect" button.
@@ -160,6 +160,36 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
 - Out of scope here: mid-stream retry inside a running transfer (a
   dropped transfer fails, the user restarts it and the next call
   reconnects). See M9.
+
+### F8. Same-host file operations
+
+Operations affecting a single host (local or remote), distinct from the
+cross-host transfer engine:
+
+- **Move**: rename across directories on the same host. Triggered by
+  drag-and-drop **within the same pane**: drop on a folder moves into
+  it; drop on the background moves to the current directory; drop in
+  the same parent is a no-op.
+- **Rename**: single-selection only. Header button prompts for a new
+  name; performed as a rename in place.
+- **Delete**: multi-selection allowed. Confirmation dialog required;
+  directories are removed **recursively**; no trash.
+- **Copy**: same pane only (cross-host copy is the existing transfer
+  flow). On a remote host, performed via `ssh exec "cp -r -- SRC DST"`
+  with safely-escaped arguments (POSIX remote required; Windows remote
+  hosts are out of scope for copy). On local, `fs.cp({ recursive: true })`.
+
+Header buttons on each pane: `Delete`, `Rename`, `Copy`. Enabled state
+depends on the current selection (Rename: exactly 1; Copy/Delete: ≥ 1).
+
+Single HTTP route: `POST /api/fileop` with
+`{ side, sessionId?, op, ...args }` where `op ∈ {move, rename, delete, copy}`.
+Operations respond synchronously; large recursive deletes/copies show a
+spinner — no SSE job system for these (see scope note below).
+
+Failures surface as a single error toast; partial-progress reporting for
+large trees is **out of scope for this version** and may be promoted to
+a job/SSE model later if needed.
 
 ## 4. Architecture
 
@@ -175,6 +205,7 @@ Path: `%APPDATA%\dropscp\config.json` (override via `DROPSCP_CONFIG_DIR`).
                         ├─ GET  /api/transfer/:jobId/events (SSE progress/done/fail)
                         ├─ POST /api/r2r                    (remote↔remote via local relay; direct path deferred)
                         ├─ GET  /api/session/status         (connected | dead | reconnecting — see F7)
+                        ├─ POST /api/fileop                 (same-host move/rename/delete/copy — see F8)
                         ├─ /api/presets                     (CRUD)
                         └─ /api/local/*                     (local filesystem)
 ```
@@ -243,7 +274,9 @@ dropdown that appears in that pane's header).
 ## 7. Out of Scope (v1)
 
 - SSH key authentication.
-- File delete / rename / edit / preview.
+- File **edit / preview**. (Delete / rename / move / copy are in scope
+  via F8 from M10 onward.)
+- Trash / undo for deletes.
 - Mid-stream retry of an in-flight transfer when the session drops
   (the next user-initiated call reconnects; see F7).
 - Multi-user, authentication, sessions across restarts (the in-memory
@@ -252,6 +285,7 @@ dropdown that appears in that pane's header).
 - Mobile UI.
 - Transfer queue prioritization (within a batch, items are FIFO across
   available workers; there are no per-item priorities or pause/reorder).
+- Copy on Windows remote hosts (the `cp -r` shell-out assumes POSIX).
 
 ## 8. Milestones
 
@@ -266,6 +300,7 @@ dropdown that appears in that pane's header).
 | M7 | R2R via local relay only | A file copies src → local temp → dst; temp cleaned up; errors surfaced per leaf |
 | M8 (deferred) | R2R direct via `sshpass` | See §3 F3-deferred decisions |
 | M9 | Auto-reconnect on idle/network drop (F7) | A killed sshd session reconnects on next ls/transfer; tab turns red while dead and recovers; concurrent dead-session requests share a single reconnect |
+| M10 | Same-host file ops: move / rename / delete / copy (F8) | Drag within a pane moves; Delete/Rename/Copy header buttons work on local and remote; recursive directory delete works; cp on remote uses safely-escaped exec |
 
 ## 9. Dependencies
 

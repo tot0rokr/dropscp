@@ -127,6 +127,62 @@ app.post('/api/transfer', (req, res) => {
   }
 });
 
+// Same-host file operations (F8). One unified route; dispatches by side+op.
+//   body: { side: 'local'|'remote', sessionId?, op, ...args }
+//     move    -> { src, dst }            (rename across directories)
+//     rename  -> { src, dst }            (same operation; separate op name for UX clarity)
+//     delete  -> { paths: [string,...] } (directories are removed recursively)
+//     copy    -> { src, dst }            (remote: cp -r via ssh exec; local: fs.cp recursive)
+app.post('/api/fileop', async (req, res) => {
+  const { side, op, sessionId } = req.body || {};
+  if (side !== 'local' && side !== 'remote') {
+    return res.status(400).json({ error: 'side must be "local" or "remote"' });
+  }
+  if (side === 'remote' && !sessionId) {
+    return res.status(400).json({ error: 'sessionId required for remote ops' });
+  }
+  try {
+    if (op === 'move' || op === 'rename') {
+      const { src, dst } = req.body;
+      if (!src || !dst) return res.status(400).json({ error: 'src and dst required' });
+      if (src === dst) return res.json({ ok: true, noop: true });
+      if (side === 'remote') await sessions.rename(sessionId, src, dst);
+      else await localFs.rename(src, dst);
+      res.json({ ok: true });
+    } else if (op === 'delete') {
+      const { paths } = req.body;
+      if (!Array.isArray(paths) || paths.length === 0) {
+        return res.status(400).json({ error: 'paths[] required (non-empty)' });
+      }
+      let count = 0;
+      const errors = [];
+      for (const p of paths) {
+        try {
+          if (side === 'remote') await sessions.removeRecursive(sessionId, p);
+          else await localFs.remove(p);
+          count++;
+        } catch (err) {
+          errors.push({ path: p, message: err.message });
+        }
+      }
+      if (errors.length && count === 0) {
+        return res.status(400).json({ error: errors[0].message, errors });
+      }
+      res.json({ ok: true, count, errors });
+    } else if (op === 'copy') {
+      const { src, dst } = req.body;
+      if (!src || !dst) return res.status(400).json({ error: 'src and dst required' });
+      if (side === 'remote') await sessions.copyPath(sessionId, src, dst);
+      else await localFs.copy(src, dst);
+      res.json({ ok: true });
+    } else {
+      res.status(400).json({ error: 'unknown op: ' + op });
+    }
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.post('/api/r2r', (req, res) => {
   const { srcSessionId, dstSessionId, items, workers } = req.body || {};
   if (!srcSessionId || !dstSessionId) {

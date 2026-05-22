@@ -161,6 +161,84 @@ async function mkdir(sessionId, dirPath) {
   });
 }
 
+// ---- Same-host file operations (F8) ----
+
+async function rename(sessionId, oldPath, newPath) {
+  if (!oldPath || !newPath) throw new Error('oldPath and newPath are required');
+  const s = await ensureAlive(sessionId);
+  return new Promise((resolve, reject) => {
+    s.sftp.rename(oldPath, newPath, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+function sftpStat(sftp, p) {
+  return new Promise((resolve, reject) => {
+    sftp.lstat(p, (err, attrs) => (err ? reject(err) : resolve(attrs)));
+  });
+}
+function sftpReaddir(sftp, p) {
+  return new Promise((resolve, reject) => {
+    sftp.readdir(p, (err, list) => (err ? reject(err) : resolve(list)));
+  });
+}
+function sftpUnlink(sftp, p) {
+  return new Promise((resolve, reject) => {
+    sftp.unlink(p, (err) => (err ? reject(err) : resolve()));
+  });
+}
+function sftpRmdir(sftp, p) {
+  return new Promise((resolve, reject) => {
+    sftp.rmdir(p, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+function posixJoin(a, b) {
+  if (!a || a === '/') return '/' + b.replace(/^\/+/, '');
+  return a.replace(/\/+$/, '') + '/' + b.replace(/^\/+/, '');
+}
+
+async function removeRecursive(sessionId, targetPath) {
+  if (!targetPath) throw new Error('path is required');
+  const s = await ensureAlive(sessionId);
+  async function rec(p) {
+    const attrs = await sftpStat(s.sftp, p);
+    if (attrs.isDirectory()) {
+      const items = await sftpReaddir(s.sftp, p);
+      for (const it of items) {
+        await rec(posixJoin(p, it.filename));
+      }
+      await sftpRmdir(s.sftp, p);
+    } else {
+      await sftpUnlink(s.sftp, p);
+    }
+  }
+  await rec(targetPath);
+}
+
+// POSIX single-quote escape: wrap in '...' and replace inner ' with '\''.
+function shellSingleQuote(str) {
+  return "'" + String(str).replace(/'/g, "'\\''") + "'";
+}
+
+async function copyPath(sessionId, src, dst) {
+  if (!src || !dst) throw new Error('src and dst are required');
+  const s = await ensureAlive(sessionId);
+  const cmd = 'cp -r -- ' + shellSingleQuote(src) + ' ' + shellSingleQuote(dst);
+  return new Promise((resolve, reject) => {
+    s.client.exec(cmd, (err, stream) => {
+      if (err) return reject(err);
+      let stderr = '';
+      stream
+        .on('close', (code) => {
+          if (code === 0) return resolve();
+          reject(new Error('cp exited ' + code + (stderr ? ': ' + stderr.trim() : '')));
+        })
+        .on('data', () => {});
+      stream.stderr.on('data', (d) => { stderr += d.toString(); });
+    });
+  });
+}
+
 module.exports = {
   create,
   close,
@@ -170,4 +248,7 @@ module.exports = {
   getStatus,
   ensureAlive,
   acquireSftpPool,
+  rename,
+  removeRecursive,
+  copyPath,
 };

@@ -66,7 +66,9 @@ npm run dev          # node --watch — 파일 변경 시 재시작
 | **멀티 드래그** | 드래그 시작한 행이 선택 안에 있으면 선택 전체가 끌림. 선택 밖이면 그 행 하나로 선택이 교체된 뒤 드래그. |
 | **병렬 전송** | 배치 드롭이 N개의 워커로 leaf 파일을 분배. 각 워커는 호스트의 단일 SSH 연결 위에 자기 SFTP 채널을 멀티플렉싱. 기본 10, 최대 10 (OpenSSH `MaxSessions` 기본값). |
 | **충돌 다이얼로그** | 배치 안에서 대상에 같은 이름이 하나라도 있으면 한 번에 묶어서 Overwrite / Skip / Cancel 묻기. |
-| **파일별 진행률** | 하단 상태바에 집계 진행바 + 모든 큐 파일을 보여주는 스크롤 리스트 (아이콘, 이름, 미니 진행바, 상태/바이트). 개별 실패는 배치를 중단시키지 않음. |
+| **파일별 진행률** | 하단 상태바에 실행 중인 잡마다 섹션 (방향, 진행바, 개수) + 모든 큐 파일을 보여주는 스크롤 리스트 (아이콘, 이름, 미니 진행바, 상태/바이트). 개별 실패는 배치를 중단시키지 않음. |
+| **전송 취소** | 잡마다 `✕`로 배치 전체 취소 (진행 중 파일은 즉시 끊김), 진행 중/대기 파일마다 자기 `✕`로 개별 취소. 취소 시 반쪽짜리 대상 파일은 자동 삭제. |
+| **같은 호스트 큐 병합** | 전송 중에 같은 호스트로 같은 방향 드롭이 더 들어오면 새 잡을 만들지 않고 진행 중인 잡에 합침 — 동시 잡이 SFTP 채널을 공유하지 않음. 방향이 다르거나 R2R 드롭은 자기 채널을 가진 별도 잡으로 동시 실행. |
 | **파일 타입 아이콘** | 트리와 전송 리스트가 확장자 기반으로 이모지 픽 (이미지, 비디오, 오디오, 압축, 코드, 문서, 실행파일, 폰트, 디스크 이미지). |
 | **Preset** | 비밀번호 제외 연결 정보 (name + user + host + port)를 `config.json`에 저장. 로그인 다이얼로그에서 dropdown으로 불러오기, 휴지통 아이콘으로 삭제. |
 | **멀티 호스트 탭** | 활성 SSH 세션마다 탭 1개. `+`로 추가, `×`로 닫음 (세션 종료). 각 탭이 현재 경로와 트리 상태를 자기 안에서 유지. |
@@ -129,15 +131,23 @@ npm run dev          # node --watch — 파일 변경 시 재시작
 
 핵심 동작 몇 가지:
 
-- **세션당 `ssh2.Client` 하나, 그 위에 SFTP 채널 여러 개.** 배치 시작 시
-  `acquireSftpPool(sessionId, n)`이 lazy로 최대 `n`개의 SFTP 채널을 그 단일
-  SSH 연결 위에 열고 캐시합니다. 워커들은 서로 다른 채널에서 돌아 호스트의
-  `MaxSessions` 한도 안에서 진짜로 병렬 전송. 채널은 세션이 닫힐 때까지 유지.
-- **Job + leaves 모델.** 모든 전송은 job 1개에 메타데이터 +
-  `leaves: [{ id, name, size, transferred, status, error, phase? }]`. 플래너가
-  디렉터리 아이템을 재귀로 펼쳐 leaf job을 push, 워커들이 공유 인덱스를 통해
-  leaf를 가져감. 진행 바이트와 상태는 leaf 객체에서 in-place로 갱신, SSE
-  스냅샷이 이 배열을 그대로 투영.
+- **세션당 `ssh2.Client` 하나, checkout/checkin SFTP 채널 풀.**
+  `checkoutSftp(sessionId, n)`이 잡에 노는 채널을 최대 `n`개 *서로 다르게*
+  내주고(busy 표시), 모자라면 더 열고 반납된 건 재사용 — 그래서 한 호스트의
+  동시 잡이 채널을 절대 공유하지 않음. 잡이 끝나면 `releaseSftp`로 반납,
+  진행 중 파일을 끊느라 죽인 채널은 `discardSftp`로 풀에서 제거(다음 checkout이
+  새로 엶). ls/mkdir/rename용 기본 채널은 따로 두고 절대 버리지 않음.
+- **Job + leaves 모델, 동적 큐.** 모든 전송은 job 1개에 메타데이터 +
+  `leaves: [{ id, name, size, transferred, status, error, phase? }]`
+  (status는 `waiting | active | done | error | cancelled`). 플래너가 디렉터리
+  아이템을 재귀로 펼쳐 leaf를 push. 업/다운 잡은 pump 엔진을 써서 워커가 움직이는
+  커서로 leaf를 가져가고, 큐가 비고 활성 워커가 0이면 잡 종료 — 덕분에
+  `appendItems`로 실행 중인 잡(같은 호스트+방향)을 키울 수 있음. 진행 바이트와
+  상태는 in-place 갱신, SSE 스냅샷이 이 배열을 그대로 투영.
+- **취소.** `fastPut`/`fastGet`는 중간에 못 끊으므로, 취소는 그 파일을 나르는
+  SFTP 채널을 죽여서 처리(드라이버 Promise도 즉시 settle). 전체 취소는 진행 중인
+  모든 채널을 죽이고 `cancelled` 플래그를 세움; 개별 취소는 그 하나만 죽이고
+  워커가 새 채널을 checkout 해서 계속. 반쪽짜리 대상 파일은 best-effort로 삭제.
 - **두 전송 endpoint, 같은 job 파이프라인.** `/api/transfer`는 업/다운로드
   (세션 1개). `/api/r2r`은 원격↔원격 (세션 2개). 둘 다 같은 SSE 이벤트
   프로토콜로 job을 만들기 때문에 UI 진행률 코드는 하나로 통일.
@@ -264,6 +274,7 @@ Preset upsert (같은 `name` 있으면 교체):
     "id": "...",
     "status": "running",
     "direction": "upload",            // 또는 "download" | "r2r"
+    "cancelled": false,               // 전체 취소 요청되면 true
     "workers": 10,
     "totalBytes": 12345678,            // r2r은 2x
     "transferredBytes": 8000000,
@@ -276,18 +287,32 @@ Preset upsert (같은 `name` 있으면 교체):
         "name": "main.js",
         "size": 12345,
         "transferred": 12345,
-        "status": "done",              // "waiting" | "active" | "done" | "error"
+        "status": "done",              // "waiting" | "active" | "done" | "error" | "cancelled"
         "error": null,
         "phase": "upload"              // r2r 한정: "download" | "upload"
       }
     ]
   }
   ```
-- **`done`** — `{ ok: true, errors: [...] }`. 배치 완료 시 (개별 leaf 에러가
-  있어도 발생).
+- **`done`** — `{ ok: true, errors: [...] }`. 배치 완료 시 (개별 leaf 에러나
+  취소가 있어도 발생).
 - **`fail`** — `{ message: "..." }`. 배치 레벨 치명적 에러 (예: 세션 없음,
   SFTP 채널 못 얻음). 개별 leaf 에러로는 `fail`이 안 뜨고 최종 스냅샷의
   `errors`에 들어감.
+
+#### `POST /api/transfer/:jobId/cancel`
+
+잡 전체 또는 파일 하나 취소. 바디 `{ "leafId": 3 }`이면 그 leaf만 취소(진행 중인
+파일은 즉시 끊기고 반쪽짜리 대상 파일은 삭제), 빈 바디 `{}`이면 잡 전체 취소.
+`{ "ok": true }` 반환, 잡이 없으면 `404`. 취소된 leaf는 `error`가 아니라
+`cancelled` 상태로 끝남.
+
+#### `POST /api/transfer/:jobId/append` — 업/다운 잡 한정
+
+바디 `{ "items": [{ "src": "...", "dst": "..." }] }`. 실행 중인 업로드/다운로드
+잡(같은 세션+방향)에 파일을 더 합침. 성공 시 `{ "ok": true }`, 잡이 이미 끝났으면
+`{ "ok": false }`(클라이언트가 새 잡을 시작). 클라이언트는 이걸 써서 바쁜 호스트로의
+같은 방향 추가 드롭을 새 잡 대신 실행 중인 잡에 합침.
 
 ## 보안 모델
 
@@ -338,8 +363,6 @@ dropscp/
   열려있는 설계 결정은 [PRD §3 F3-deferred decisions](PRD.md)에 박아둠 (dst
   비밀번호 캐싱, `sshpass` 탐지, `StrictHostKeyChecking`, SSE notice 이벤트,
   /api/r2r 스키마, 릴레이 진행률 회계 방식).
-- **전송 취소 UI 없음**. 상태바에 진행률은 표시되지만 job/leaf별 cancel 버튼은
-  아직 없음.
 - **세션 상태가 재시작 사이에 유지되지 않음**. SSH 세션은 `sessionId` 키로
   백엔드 메모리에 살아있고, Node 프로세스가 끝나면 사라짐.
 
@@ -356,6 +379,9 @@ dropscp/
 | M5 | 멀티 셀렉트 + 워커풀 병렬 전송 | ✅ |
 | M6 | 멀티 호스트 탭 | ✅ |
 | M7 | R2R via 로컬 릴레이만 | ✅ |
+| M9 | 유휴/네트워크 끊김 시 자동 재접속 | ✅ |
+| M10 | 같은 호스트 파일 작업: 이동 / 이름변경 / 삭제 / 복사 | ✅ |
+| M11 | 전송 취소 (잡 전체 + 파일별) + 같은 호스트 큐 병합 | ✅ |
 | M8 (deferred) | `sshpass`로 R2R direct | open |
 | §6 | Per-launch API 토큰, known-hosts 고정 | open |
 

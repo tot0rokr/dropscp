@@ -191,6 +191,32 @@ Failures surface as a single error toast; partial-progress reporting for
 large trees is **out of scope for this version** and may be promoted to
 a job/SSE model later if needed.
 
+### F9. Transfer cancel + same-host queue merge
+
+Stopping work that is already running, plus how concurrent drops to one
+host are coordinated:
+
+- **Whole-job cancel**: a `✕` on each running job's progress section.
+  In-flight files are cut **immediately** (their SFTP channel is killed),
+  remaining queued files are marked cancelled, the job ends normally.
+- **Per-file cancel**: a `✕` on each in-flight/queued file row. Cuts just
+  that file (in-flight: channel killed and a fresh one checked out so the
+  rest of the batch continues; queued: skipped when its turn comes).
+- **Partial cleanup**: the partially-written destination file is deleted
+  best-effort on cancel (remote via SFTP, local via `unlink`); R2R temp
+  files are cleaned as before. Cancelled leaves end with status
+  `cancelled`, distinct from `error`, so they aren't reported as failures.
+- **Same-host queue merge**: because `fastPut`/`fastGet` can only be
+  aborted by tearing down their channel, concurrent jobs on one host must
+  not share channels. The SFTP pool is therefore checkout/checkin (each
+  job gets distinct channels), and a same-host **same-direction** drop
+  while a transfer runs is **folded into the running job** (`appendItems`)
+  rather than starting a second one. Opposite-direction / R2R drops run as
+  separate concurrent jobs, each with its own checked-out channels.
+
+Routes: `POST /api/transfer/:jobId/cancel` (`{ leafId? }`) and
+`POST /api/transfer/:jobId/append` (`{ items }`, up/down jobs only).
+
 ## 4. Architecture
 
 ```
@@ -202,6 +228,8 @@ a job/SSE model later if needed.
                         ├─ GET  /api/ls                     (remote directory listing)
                         ├─ POST /api/mkdir                  (remote)
                         ├─ POST /api/transfer               (start a batch; returns jobId)
+                        ├─ POST /api/transfer/:jobId/cancel (whole job or one leaf — see F9)
+                        ├─ POST /api/transfer/:jobId/append (fold more files into a running job — see F9)
                         ├─ GET  /api/transfer/:jobId/events (SSE progress/done/fail)
                         ├─ POST /api/r2r                    (remote↔remote via local relay; direct path deferred)
                         ├─ GET  /api/session/status         (connected | dead | reconnecting — see F7)
@@ -301,6 +329,7 @@ dropdown that appears in that pane's header).
 | M8 (deferred) | R2R direct via `sshpass` | See §3 F3-deferred decisions |
 | M9 | Auto-reconnect on idle/network drop (F7) | A killed sshd session reconnects on next ls/transfer; tab turns red while dead and recovers; concurrent dead-session requests share a single reconnect |
 | M10 | Same-host file ops: move / rename / delete / copy (F8) | Drag within a pane moves; Delete/Rename/Copy header buttons work on local and remote; recursive directory delete works; cp on remote uses safely-escaped exec |
+| M11 | Transfer cancel + same-host queue merge (F9) | In-flight file is cut immediately and its partial destination deleted; per-file and whole-job cancel both work; a same-host same-direction drop folds into the running job; concurrent jobs on one host never share an SFTP channel |
 
 ## 9. Dependencies
 

@@ -67,7 +67,9 @@ presets (see [Configuration](#configuration)).
 | **Multi-item drag** | If the row you start dragging is part of the selection, the whole selection drags. If not, the selection is replaced with just that row before the drag starts. |
 | **Parallel transfers** | A batch drop dispatches leaf files across N workers, each holding its own SFTP channel multiplexed on the host's single SSH connection. Default 10 workers; configurable up to 10 (OpenSSH `MaxSessions` default). |
 | **Conflict dialog** | If any item collides with an existing name on the destination, a single batch dialog asks Overwrite / Skip / Cancel. |
-| **Per-file progress** | The status bar at the bottom has an aggregate progress bar plus a scrollable list with every queued file (icon, name, mini progress bar, status / bytes). Errors don't abort the batch. |
+| **Per-file progress** | The status bar at the bottom shows one section per running job (direction, progress bar, counts) over a scrollable list of every queued file (icon, name, mini progress bar, status / bytes). Errors don't abort the batch. |
+| **Cancel transfers** | Each running job has a `✕` to cancel the whole batch (in-flight files are cut immediately) and each in-flight/queued file has its own `✕`. The partially-written destination file is auto-deleted on cancel. |
+| **Same-host queue merge** | Dropping more files onto the same host in the same direction while a transfer is running folds them into the running job instead of starting a second one — so concurrent jobs never share SFTP channels. Opposite-direction / R2R drops run as separate concurrent jobs with their own channels. |
 | **File type icons** | The tree and transfer list pick an emoji per extension (image, video, audio, archive, code, doc, executable, font, disk image). |
 | **Presets** | Save the non-secret bits of a connection (name + user + host + port) to `config.json`. The login dialog has a dropdown to recall and a button to delete presets. |
 | **Multi-host tabs** | One tab per open SSH session. `+` to add, `×` to close (terminates the session). Each tab keeps its own current path and tree state. |
@@ -132,17 +134,28 @@ presets (see [Configuration](#configuration)).
 
 A few load-bearing pieces:
 
-- **One `ssh2.Client` per session, many SFTP channels.** When a batch
-  starts, `acquireSftpPool(sessionId, n)` lazily opens up to `n` SFTP
-  channels on that single SSH connection and caches them. Workers run on
-  separate channels, so transfers run truly in parallel within the
-  host's `MaxSessions`. Channels persist until the session is closed.
-- **Job + leaves model.** Every transfer is a `job` with metadata plus
-  `leaves: [{ id, name, size, transferred, status, error, phase? }]`.
-  The planner walks any directory items in the input and pushes leaf
-  jobs. Workers consume leaves off a shared index. Per-leaf status and
-  transferred bytes are mutated in place; SSE snapshots project the
-  array.
+- **One `ssh2.Client` per session, a checkout/checkin SFTP channel pool.**
+  `checkoutSftp(sessionId, n)` hands a job up to `n` *distinct* idle
+  channels (marking them busy), lazily opening more as needed and reusing
+  released ones — so concurrent jobs on one host never share a channel.
+  `releaseSftp` returns them when a job ends; `discardSftp` tears down a
+  channel that was killed to abort an in-flight file and drops it from the
+  pool (a fresh one opens on the next checkout). The primary channel for
+  metadata ops (ls/mkdir/rename) is kept separate and never discarded.
+- **Job + leaves model, dynamic queue.** Every transfer is a `job` with
+  metadata plus `leaves: [{ id, name, size, transferred, status, error,
+  phase? }]` (status is `waiting | active | done | error | cancelled`).
+  The planner walks any directory items and pushes leaf jobs. Up/down jobs
+  use a pump engine: workers pull leaves off a moving cursor and the job
+  finalizes when the queue is drained and no worker is active — which lets
+  `appendItems` grow a still-running job (same host + direction). Per-leaf
+  status and bytes are mutated in place; SSE snapshots project the array.
+- **Cancellation.** `fastPut`/`fastGet` can't be interrupted, so a cancel
+  kills the SFTP channel carrying that file (and settles the driver
+  promise immediately). Full cancel kills every in-flight channel and sets
+  a `cancelled` flag; per-leaf cancel kills just that one and the worker
+  checks out a fresh channel to keep going. The partial destination file
+  is removed best-effort.
 - **Two transfer endpoints, one job pipeline.** `/api/transfer` covers
   upload + download (one session). `/api/r2r` covers remote↔remote (two
   sessions). Both produce jobs with the same SSE event protocol so the
@@ -272,6 +285,7 @@ Progress stream for any job (transfer or r2r). Three event types:
     "id": "...",
     "status": "running",
     "direction": "upload",            // or "download" | "r2r"
+    "cancelled": false,               // true once a full cancel was requested
     "workers": 10,
     "totalBytes": 12345678,            // 2x for r2r jobs
     "transferredBytes": 8000000,
@@ -284,7 +298,7 @@ Progress stream for any job (transfer or r2r). Three event types:
         "name": "main.js",
         "size": 12345,
         "transferred": 12345,
-        "status": "done",              // "waiting" | "active" | "done" | "error"
+        "status": "done",              // "waiting" | "active" | "done" | "error" | "cancelled"
         "error": null,
         "phase": "upload"              // r2r only: "download" | "upload"
       }
@@ -292,10 +306,27 @@ Progress stream for any job (transfer or r2r). Three event types:
   }
   ```
 - **`done`** — `{ ok: true, errors: [...] }` once the batch finishes,
-  even if individual leaves errored.
+  even if individual leaves errored or were cancelled.
 - **`fail`** — `{ message: "..." }` for fatal batch-level errors (e.g.,
   session not found, no SFTP channels). Per-leaf errors do **not**
   trigger `fail` — they live in the `errors` field of the final snapshot.
+
+#### `POST /api/transfer/:jobId/cancel`
+
+Cancel a whole job or a single file. Body `{ "leafId": 3 }` cancels just
+that leaf (in-flight files are cut immediately and their partial
+destination is deleted); an empty body `{}` cancels the entire job.
+Returns `{ "ok": true }`, or `404` if the job is gone. Cancelled leaves
+end with status `cancelled`, not `error`.
+
+#### `POST /api/transfer/:jobId/append` — only up/down jobs
+
+Body `{ "items": [{ "src": "...", "dst": "..." }] }`. Folds more files
+into a still-running upload/download job (same session + direction).
+Returns `{ "ok": true }` on success, or `{ "ok": false }` if the job has
+already finished (the client then starts a new job instead). The client
+uses this so additional same-direction drops onto a busy host join the
+running job rather than spawn a second one.
 
 ## Security model
 
@@ -351,8 +382,6 @@ dropscp/
   design choices (dst password caching, `sshpass` detection,
   `StrictHostKeyChecking`, SSE notice event, /api/r2r shape, relay
   progress accounting) so we can pick it up later.
-- **No transfer cancel UI.** The status bar shows progress but there's no
-  cancel button per job/leaf yet.
 - **No persistence of session state across restarts.** SSH sessions live
   in backend memory keyed by `sessionId` and are gone if the Node
   process exits.
@@ -370,6 +399,9 @@ Per [PRD.md](PRD.md):
 | M5 | Multi-select + worker-pool concurrent transfer | ✅ |
 | M6 | Multi-host tabs | ✅ |
 | M7 | R2R via local relay only | ✅ |
+| M9 | Auto-reconnect on idle/network drop | ✅ |
+| M10 | Same-host file ops: move / rename / delete / copy | ✅ |
+| M11 | Transfer cancel (whole job + per-file) + same-host queue merge | ✅ |
 | M8 (deferred) | R2R direct via `sshpass` | open |
 | §6 | Per-launch API token, known-hosts pinning | open |
 

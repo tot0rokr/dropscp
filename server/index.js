@@ -219,6 +219,38 @@ app.post('/api/r2r', (req, res) => {
   }
 });
 
+// Append more files to a still-running up/down job (same session + direction).
+// Returns { ok: false } if the job already finished so the client starts a new one.
+app.post('/api/transfer/:jobId/append', async (req, res) => {
+  const job = transfer.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  const { items } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items[] required (non-empty)' });
+  }
+  for (const it of items) {
+    if (!it || typeof it.src !== 'string' || typeof it.dst !== 'string' || !it.src || !it.dst) {
+      return res.status(400).json({ error: 'each item must have non-empty src and dst' });
+    }
+  }
+  try {
+    const ok = await transfer.appendItems(job, items);
+    res.json({ ok });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Cancel a whole job (no leafId) or a single in-flight/queued file (leafId).
+app.post('/api/transfer/:jobId/cancel', (req, res) => {
+  const job = transfer.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  const { leafId } = req.body || {};
+  if (leafId != null) transfer.cancelLeaf(job, Number(leafId));
+  else transfer.cancelJob(job);
+  res.json({ ok: true });
+});
+
 app.get('/api/transfer/:jobId/events', (req, res) => {
   const job = transfer.get(req.params.jobId);
   if (!job) return res.status(404).end();

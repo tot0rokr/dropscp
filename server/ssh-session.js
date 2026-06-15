@@ -14,7 +14,7 @@ function attachDeathListeners(s) {
     if (s.status === 'dead' || s.status === 'reconnecting') return;
     s.status = 'dead';
     s.sftp = null;
-    s.sftpPool = [];
+    s.sftpPool = [];   // transfer channels are gone with the connection
   };
   s.client.on('error', markDead);
   s.client.on('close', markDead);
@@ -51,8 +51,8 @@ async function create({ username, host, port, password }) {
   const id = crypto.randomBytes(16).toString('hex');
   const s = {
     client,
-    sftp,
-    sftpPool: [sftp],
+    sftp,                // primary channel: metadata ops (ls/mkdir/rename/…). Never checked out or discarded.
+    sftpPool: [],        // transfer channels, lazily opened: [{ sftp, busy }]. Reused across jobs; disposable on cancel.
     info: { username, host, port },
     password,
     status: 'connected',
@@ -88,7 +88,7 @@ async function reconnectInPlace(s) {
   const { client, sftp } = await rawConnect({ ...s.info, password: s.password });
   s.client = client;
   s.sftp = sftp;
-  s.sftpPool = [sftp];
+  s.sftpPool = [];   // rebuilt on demand by checkoutSftp
   s.status = 'connected';
   attachDeathListeners(s);
 }
@@ -116,21 +116,50 @@ async function ensureAlive(sessionId) {
   return s;
 }
 
-// Returns an array of `n` SFTP channels (always >= 1). Lazily opens new channels
-// as needed and caches them on the session; channels live until the session is
-// closed. If a channel open fails, returns whatever pool we have so far (>= 1).
-async function acquireSftpPool(sessionId, n) {
+// Check out up to `n` *distinct* idle transfer channels, marking them busy so a
+// concurrent job on the same session never shares them. Reuses idle channels
+// (cache) and lazily opens more as needed; channels live until released or
+// discarded. Returns whatever could be secured (may be < n, possibly 0 if the
+// server refuses to open any channel) — callers handle a short/empty result.
+async function checkoutSftp(sessionId, n) {
   const s = await ensureAlive(sessionId);
   const want = Math.max(1, Math.floor(n) || 1);
-  while (s.sftpPool.length < want) {
+  const out = [];
+  for (const slot of s.sftpPool) {
+    if (out.length >= want) break;
+    if (!slot.busy) { slot.busy = true; out.push(slot.sftp); }
+  }
+  while (out.length < want) {
     try {
       const extra = await openSftp(s.client);
-      s.sftpPool.push(extra);
+      s.sftpPool.push({ sftp: extra, busy: true });
+      out.push(extra);
     } catch (_) {
       break;
     }
   }
-  return s.sftpPool.slice(0, Math.min(want, s.sftpPool.length));
+  return out;
+}
+
+// Return channels to the pool (idle) for reuse by later jobs.
+function releaseSftp(sessionId, channels) {
+  const s = sessions.get(sessionId);
+  if (!s || !channels) return;
+  const set = new Set(channels);
+  for (const slot of s.sftpPool) {
+    if (set.has(slot.sftp)) slot.busy = false;
+  }
+}
+
+// Tear down a channel that was killed to abort an in-flight transfer, and drop
+// it from the pool so it is never handed out again. A fresh one is opened by the
+// next checkout. Never touches the primary `s.sftp` (metadata channel).
+function discardSftp(sessionId, sftp) {
+  const s = sessions.get(sessionId);
+  if (!s || !sftp) return;
+  const i = s.sftpPool.findIndex((slot) => slot.sftp === sftp);
+  if (i >= 0) s.sftpPool.splice(i, 1);
+  try { sftp.end(); } catch (_) {}
 }
 
 async function ls(sessionId, dirPath) {
@@ -247,7 +276,9 @@ module.exports = {
   get,
   getStatus,
   ensureAlive,
-  acquireSftpPool,
+  checkoutSftp,
+  releaseSftp,
+  discardSftp,
   rename,
   removeRecursive,
   copyPath,

@@ -280,15 +280,6 @@ body.dragging-splitter * { user-select: none !important; }
   font-size: 0.85em;
   max-height: 320px;
 }
-.status-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.4rem 0.75rem;
-  flex-shrink: 0;
-}
-.status-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.status-meta { font-variant-numeric: tabular-nums; color: #d1d5db; }
 .progress-track {
   width: 180px;
   height: 8px;
@@ -317,7 +308,7 @@ body.dragging-splitter * { user-select: none !important; }
 .transfer-list:empty { display: none; }
 .transfer-list li.leaf {
   display: grid;
-  grid-template-columns: 1.3em minmax(0, 1fr) 90px 150px;
+  grid-template-columns: 1.3em minmax(0, 1fr) 90px 150px 1.6em;
   align-items: center;
   gap: 0.5rem;
   padding: 0.2rem 0.75rem;
@@ -359,6 +350,42 @@ body.dragging-splitter * { user-select: none !important; }
 .transfer-list li[data-status="error"]   .leaf-fill { background: #f87171; width: 100% !important; }
 .transfer-list li[data-status="error"]   { color: #fca5a5; }
 .transfer-list li[data-status="error"] .leaf-meta { color: #fca5a5; }
+.transfer-list li[data-status="cancelled"] .leaf-fill { background: #9ca3af; }
+.transfer-list li[data-status="cancelled"] { color: #9ca3af; }
+.transfer-list li[data-status="cancelled"] .leaf-meta { color: #9ca3af; }
+
+/* --- Per-job sections + cancel buttons --- */
+.transfer-jobs {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.job-section { display: flex; flex-direction: column; border-bottom: 1px solid #0b1220; }
+.job-section:last-child { border-bottom: none; }
+.job-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.75rem;
+  flex-shrink: 0;
+}
+.job-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-meta { font-variant-numeric: tabular-nums; color: #d1d5db; }
+.job-cancel, .leaf-cancel {
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 0.9em;
+  line-height: 1;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+.job-cancel:hover:not(:disabled), .leaf-cancel:hover:not(:disabled) { color: #fff; background: #ef4444; }
+.job-cancel:disabled, .leaf-cancel:disabled { opacity: 0.35; cursor: default; }
+.leaf-cancel[hidden] { display: none; }
 
 /* --- Dialogs --- */
 dialog#login-dialog, dialog#conflict-dialog {

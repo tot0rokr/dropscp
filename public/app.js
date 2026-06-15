@@ -17,6 +17,7 @@
     r2rMode: false,
     r2rHost: null,
     presets: [],
+    transfers: new Map(),   // jobId -> { direction, originSessionId, key, refreshSide, refreshDir, es, snap, section }
   };
 
   // ---- API ----
@@ -56,6 +57,8 @@
     localMkdir:    (p)            => api('POST', '/api/local/mkdir', { path: p }),
     startTransfer: (body)         => api('POST', '/api/transfer', body),
     startR2R:      (body)         => api('POST', '/api/r2r', body),
+    appendTransfer:(jobId, items) => api('POST', `/api/transfer/${jobId}/append`, { items }),
+    cancelTransfer:(jobId, leafId)=> api('POST', `/api/transfer/${jobId}/cancel`, leafId != null ? { leafId } : {}),
     fileop:        (body)         => api('POST', '/api/fileop', body),
     listPresets:   ()             => api('GET',  '/api/presets'),
     savePreset:    (p)            => api('POST', '/api/presets', p),
@@ -105,9 +108,6 @@
     remoteTree:     $('#remote-tree'),
     localTree:      $('#local-tree'),
     statusBar:      $('#status-bar'),
-    statusText:     $('#status-text'),
-    statusMeta:     $('#status-meta'),
-    progressFill:   $('#progress-fill'),
     transferList:   $('#transfer-list'),
     panes:          $('.panes'),
     splitter:       $('#pane-splitter'),
@@ -725,41 +725,47 @@
         const srcSessionId = sessionIdForSide(srcSide);
         const dstSessionId = sessionIdForSide(dstSide);
         const { jobId } = await Api.startR2R({ srcSessionId, dstSessionId, items });
-        await streamProgress(jobId, dstSide, dstDir, dstSessionId);
+        streamProgress(jobId, 'r2r', dstSide, dstDir, dstSessionId);
       } else {
         const direction = (srcSide === 'local') ? 'upload' : 'download';
         const originSessionId = sessionIdForSide('remote');
+        // Same tab + same direction while a transfer runs: fold these files into
+        // the running job instead of starting a second one (no channel sharing).
+        const existing = findAppendable(originSessionId, direction);
+        if (existing) {
+          const { ok } = await Api.appendTransfer(existing.jobId, items);
+          if (ok) {
+            existing.refreshSide = dstSide;
+            existing.refreshDir = dstDir;
+            return;
+          }
+        }
         const { jobId } = await Api.startTransfer({ direction, sessionId: originSessionId, items });
-        await streamProgress(jobId, dstSide, dstDir, originSessionId);
+        streamProgress(jobId, direction, dstSide, dstDir, originSessionId);
       }
     } catch (err) {
       window.alert('transfer failed: ' + err.message);
     }
   }
 
+  function findAppendable(originSessionId, direction) {
+    const key = originSessionId + '|' + direction;
+    for (const t of state.transfers.values()) {
+      if (t.key === key) return t;
+    }
+    return null;
+  }
+
   // ---- Progress UI ----
-  // Rows are mutated in place (by leaf.id) to avoid full re-render on each tick.
-  let leafRows = new Map();
-
-  function showProgress() {
-    leafRows = new Map();
-    dom.transferList.replaceChildren();
-    dom.statusBar.hidden = false;
-    dom.progressFill.style.width = '0%';
-    dom.statusText.textContent = 'Preparing…';
-    dom.statusMeta.textContent = '';
-  }
-  function hideProgress() {
-    dom.statusBar.hidden = true;
-    leafRows = new Map();
-    dom.transferList.replaceChildren();
-  }
-
+  // Each running job gets its own section in the status bar. Concurrent jobs on
+  // one host only happen for opposite-direction / R2R drops (same-direction
+  // drops are folded into the running job by initiateTransfer). Rows are mutated
+  // in place (by leaf.id) to avoid a full re-render on each tick.
   function iconFor(leaf) {
     return fileIcon(leaf.name, false);
   }
 
-  function makeLeafRow(leaf) {
+  function makeLeafRow(jobId, leaf) {
     const li = document.createElement('li');
     li.className = 'leaf';
     li.dataset.id = String(leaf.id);
@@ -771,13 +777,19 @@
     const fill = document.createElement('span'); fill.className = 'leaf-fill';
     bar.appendChild(fill);
     const meta = document.createElement('span'); meta.className = 'leaf-meta';
+    const cancel = document.createElement('button');
+    cancel.className = 'leaf-cancel'; cancel.type = 'button';
+    cancel.textContent = '✕'; cancel.title = 'Cancel this file';
+    cancel.addEventListener('click', () => { cancel.disabled = true; Api.cancelTransfer(jobId, leaf.id).catch(() => {}); });
 
-    li.append(icon, name, bar, meta);
-    return { el: li, fill, meta, name };
+    li.append(icon, name, bar, meta, cancel);
+    return { el: li, fill, meta, name, cancel };
   }
 
   function applyLeafState(entry, leaf) {
     entry.el.dataset.status = leaf.status;
+    const terminal = leaf.status === 'done' || leaf.status === 'error' || leaf.status === 'cancelled';
+    entry.cancel.hidden = terminal;
     if (leaf.status === 'active') {
       const pct = leaf.size > 0 ? (leaf.transferred / leaf.size) * 100 : 0;
       entry.fill.style.width = pct.toFixed(0) + '%';
@@ -789,6 +801,9 @@
     } else if (leaf.status === 'error') {
       entry.meta.textContent = '✗ ' + (leaf.error || 'error');
       entry.meta.title = leaf.error || '';
+    } else if (leaf.status === 'cancelled') {
+      entry.meta.textContent = '✕ cancelled';
+      entry.meta.title = '';
     } else { // waiting
       entry.fill.style.width = '0%';
       entry.meta.textContent = fmtSize(leaf.size);
@@ -796,29 +811,52 @@
     }
   }
 
-  function updateLeavesList(leaves) {
+  function ensureSection(t) {
+    if (t.section) return t.section;
+    const root = document.createElement('div'); root.className = 'job-section'; root.dataset.jobId = t.jobId;
+    const header = document.createElement('div'); header.className = 'job-header';
+    const text = document.createElement('span'); text.className = 'job-text'; text.textContent = 'Preparing…';
+    const track = document.createElement('div'); track.className = 'progress-track';
+    const fill = document.createElement('div'); fill.className = 'progress-fill'; track.appendChild(fill);
+    const meta = document.createElement('span'); meta.className = 'job-meta';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'job-cancel'; cancelBtn.type = 'button';
+    cancelBtn.textContent = '✕'; cancelBtn.title = 'Cancel all';
+    cancelBtn.addEventListener('click', () => { cancelBtn.disabled = true; Api.cancelTransfer(t.jobId).catch(() => {}); });
+    header.append(text, track, meta, cancelBtn);
+    const list = document.createElement('ul'); list.className = 'transfer-list';
+    root.append(header, list);
+    dom.transferList.appendChild(root);
+    t.section = { root, fill, text, meta, cancelBtn, list, leafRows: new Map() };
+    return t.section;
+  }
+
+  function updateLeaves(t, leaves) {
+    const s = t.section;
     const frag = document.createDocumentFragment();
     let appended = false;
     for (const leaf of leaves) {
-      let entry = leafRows.get(leaf.id);
+      let entry = s.leafRows.get(leaf.id);
       if (!entry) {
-        entry = makeLeafRow(leaf);
-        leafRows.set(leaf.id, entry);
+        entry = makeLeafRow(t.jobId, leaf);
+        s.leafRows.set(leaf.id, entry);
         frag.appendChild(entry.el);
         appended = true;
       }
       applyLeafState(entry, leaf);
     }
-    if (appended) dom.transferList.appendChild(frag);
+    if (appended) s.list.appendChild(frag);
   }
 
-  function updateProgress(snap) {
+  function updateJobSection(t, snap) {
+    const s = ensureSection(t);
     const pct = snap.totalBytes > 0
       ? Math.min(100, (snap.transferredBytes / snap.totalBytes) * 100)
       : (snap.totalFiles > 0 ? (snap.doneFiles / snap.totalFiles) * 100 : 0);
-    dom.progressFill.style.width = pct.toFixed(1) + '%';
+    s.fill.style.width = pct.toFixed(1) + '%';
 
-    const verb = snap.direction === 'upload' ? 'Uploading'
+    const verb = snap.cancelled ? 'Cancelling'
+              : snap.direction === 'upload' ? 'Uploading'
               : snap.direction === 'download' ? 'Downloading'
               : 'Relaying';
     const counter = snap.totalFiles > 0 ? ` (${snap.doneFiles}/${snap.totalFiles})` : '';
@@ -829,64 +867,79 @@
       : active.length === 1
         ? ` — ${labelFor(active[0])}`
         : ` — ${labelFor(active[0])} (+${active.length - 1} more)`;
-    dom.statusText.textContent = `${verb}${counter}${activeLabel}`;
-    dom.statusMeta.textContent = `${fmtSize(snap.transferredBytes)} / ${fmtSize(snap.totalBytes)}  ${pct.toFixed(0)}%`;
+    s.text.textContent = `${verb}${counter}${activeLabel}`;
+    s.meta.textContent = `${fmtSize(snap.transferredBytes)} / ${fmtSize(snap.totalBytes)}  ${pct.toFixed(0)}%`;
+    if (snap.cancelled) s.cancelBtn.disabled = true;
 
-    if (snap.leaves && snap.leaves.length) updateLeavesList(snap.leaves);
+    if (snap.leaves && snap.leaves.length) updateLeaves(t, snap.leaves);
   }
 
-  function streamProgress(jobId, refreshSide, refreshDir, originSessionId) {
-    return new Promise((resolve) => {
-      const es = new EventSource(`/api/transfer/${jobId}/events`);
-      showProgress();
-      let lastSnap = null;
-      es.addEventListener('progress', (e) => {
-        try { lastSnap = JSON.parse(e.data); updateProgress(lastSnap); } catch (_) {}
-      });
-      es.addEventListener('done', (e) => {
-        es.close();
-        let data = {};
-        try { data = JSON.parse(e.data); } catch (_) {}
-        const planErrs = (data.errors && data.errors.length) ? data.errors : (lastSnap && lastSnap.errors) || [];
-        const leafErrs = (lastSnap && lastSnap.leaves)
-          ? lastSnap.leaves.filter((l) => l.status === 'error').map((l) => ({ src: l.name, message: l.error || 'error' }))
-          : [];
-        const errs = planErrs.concat(leafErrs);
-        hideProgress();
-        if (errs.length) {
-          const summary = errs.slice(0, 5).map((x) => `• ${basename(x.src)}: ${x.message}`).join('\n');
-          const tail = errs.length > 5 ? `\n…and ${errs.length - 5} more` : '';
-          window.alert(`Transfer finished with ${errs.length} error(s):\n${summary}${tail}`);
-        }
-        // Tab-aware auto-refresh: only refresh if the user hasn't switched away
-        // from the originating session/dir while the transfer was running.
-        const activeSid = state.session && state.session.sessionId;
-        const r2rSid = state.r2rHost && state.r2rHost.session.sessionId;
-        if (refreshSide === 'remote' && activeSid === originSessionId && state.remote.path === refreshDir) {
-          loadRemote(state.remote.path);
-        } else if (refreshSide === 'r2r' && r2rSid === originSessionId && state.r2rHost.remote.path === refreshDir) {
-          loadR2R(state.r2rHost.remote.path);
-        } else if (refreshSide === 'local' && state.local.path === refreshDir) {
-          loadLocal(state.local.path);
-        }
-        resolve();
-      });
-      es.addEventListener('fail', (e) => {
-        es.close();
-        hideProgress();
-        let data = {};
-        try { data = JSON.parse(e.data); } catch (_) {}
-        window.alert('transfer error: ' + (data.message || 'unknown'));
-        resolve();
-      });
-      es.onerror = () => {
-        if (es.readyState === EventSource.CLOSED) return;
-        es.close();
-        hideProgress();
-        window.alert('transfer stream disconnected');
-        resolve();
-      };
+  function finishTransfer(t) {
+    if (t.section) t.section.root.remove();
+    state.transfers.delete(t.jobId);
+    if (state.transfers.size === 0) dom.statusBar.hidden = true;
+  }
+
+  function autoRefresh(t) {
+    // Tab-aware auto-refresh: only refresh if the user hasn't switched away
+    // from the originating session/dir while the transfer was running.
+    const activeSid = state.session && state.session.sessionId;
+    const r2rSid = state.r2rHost && state.r2rHost.session.sessionId;
+    if (t.refreshSide === 'remote' && activeSid === t.originSessionId && state.remote.path === t.refreshDir) {
+      loadRemote(state.remote.path);
+    } else if (t.refreshSide === 'r2r' && r2rSid === t.originSessionId && state.r2rHost.remote.path === t.refreshDir) {
+      loadR2R(state.r2rHost.remote.path);
+    } else if (t.refreshSide === 'local' && state.local.path === t.refreshDir) {
+      loadLocal(state.local.path);
+    }
+  }
+
+  function streamProgress(jobId, direction, refreshSide, refreshDir, originSessionId) {
+    const t = {
+      jobId, direction, originSessionId,
+      key: originSessionId + '|' + direction,
+      refreshSide, refreshDir, es: null, snap: null, section: null,
+    };
+    state.transfers.set(jobId, t);
+    dom.statusBar.hidden = false;
+    ensureSection(t);
+
+    const es = new EventSource(`/api/transfer/${jobId}/events`);
+    t.es = es;
+    es.addEventListener('progress', (e) => {
+      try { t.snap = JSON.parse(e.data); updateJobSection(t, t.snap); } catch (_) {}
     });
+    es.addEventListener('done', (e) => {
+      es.close();
+      let data = {};
+      try { data = JSON.parse(e.data); } catch (_) {}
+      const lastSnap = t.snap;
+      const planErrs = (data.errors && data.errors.length) ? data.errors : (lastSnap && lastSnap.errors) || [];
+      const leafErrs = (lastSnap && lastSnap.leaves)
+        ? lastSnap.leaves.filter((l) => l.status === 'error').map((l) => ({ src: l.name, message: l.error || 'error' }))
+        : [];
+      const errs = planErrs.concat(leafErrs);
+      finishTransfer(t);
+      if (errs.length) {
+        const summary = errs.slice(0, 5).map((x) => `• ${basename(x.src)}: ${x.message}`).join('\n');
+        const tail = errs.length > 5 ? `\n…and ${errs.length - 5} more` : '';
+        window.alert(`Transfer finished with ${errs.length} error(s):\n${summary}${tail}`);
+      }
+      autoRefresh(t);
+    });
+    es.addEventListener('fail', (e) => {
+      es.close();
+      finishTransfer(t);
+      let data = {};
+      try { data = JSON.parse(e.data); } catch (_) {}
+      window.alert('transfer error: ' + (data.message || 'unknown'));
+    });
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) return;
+      es.close();
+      finishTransfer(t);
+      window.alert('transfer stream disconnected');
+    };
   }
 
   // ---- Presets ----

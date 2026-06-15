@@ -89,6 +89,7 @@ function snapshot(job) {
     id: job.id,
     status: job.status,
     direction: job.direction,
+    cancelled: job.cancelled,
     totalBytes: job.totalBytes,
     transferredBytes: job.transferredBytes,
     totalFiles: job.totalFiles,
@@ -119,6 +120,8 @@ function complete(job, kind, payload) {
   // kind is 'done' or 'fail'. We never emit Node's special 'error' event
   // because an unhandled emit on 'error' crashes the process when no SSE
   // consumer is attached yet.
+  if (job.finished) return;
+  job.finished = true;
   job.status = kind === 'done' ? 'done' : 'error';
   if (kind === 'fail') job.error = payload.message;
   emitProgress(job, true);
@@ -136,14 +139,23 @@ function create({ direction, sessionId, dstSessionId, items, workers }) {
     items: items.slice(),          // [{ src, dst }, ...] — dst is the FINAL path (includes basename)
     workers: Math.max(1, Math.floor(workers) || 1),
     status: 'pending',
+    cancelled: false,              // set by cancelJob (full cancel)
     totalBytes: 0,
     transferredBytes: 0,
     totalFiles: 0,
     doneFiles: 0,
-    leaves: [],                    // [{ id, name, src, dst, size, transferred, status, error }]
+    leaves: [],                    // [{ id, name, src, dst, size, transferred, status, error, _sftp, _sftpSession, _cancel, _abort }]
     errors: [],                    // planning-stage errors (no leaf exists)
     error: null,                   // fatal batch-level error
     events: new EventEmitter(),
+    finished: false,
+    // up/down dynamic-queue engine state:
+    nextIdx: 0,                    // cursor into leaves[]
+    activeWorkers: 0,
+    channels: [],                  // all checked-out transfer channels (for release)
+    idle: [],                      // channels free to start a worker on
+    _transferOne: null,            // putFile | getFile (chosen at start)
+    _appending: false,             // suppress finalize while appendItems is planning
     _lastEmit: 0,
   };
   job.events.setMaxListeners(40);
@@ -156,11 +168,23 @@ function get(id) {
 }
 
 // ---- File-level transfer drivers ----
+// Each driver registers leaf._abort so a cancel can settle the promise
+// immediately even if ssh2's callback is swallowed by the channel teardown.
 function putFile(sftp, leaf, job) {
   return new Promise((resolve, reject) => {
     leaf.status = 'active';
     leaf.transferred = 0;
-    let prev = 0;
+    let prev = 0, settled = false;
+    const done = (err) => {
+      if (settled) return;
+      settled = true;
+      leaf._abort = null;
+      if (err) return reject(err);
+      leaf.status = 'done';
+      leaf.transferred = leaf.size;
+      resolve();
+    };
+    leaf._abort = (err) => done(err || new Error('cancelled'));
     sftp.fastPut(leaf.src, leaf.dst, {
       step: (transferred) => {
         job.transferredBytes += (transferred - prev);
@@ -168,17 +192,7 @@ function putFile(sftp, leaf, job) {
         prev = transferred;
         emitProgress(job);
       },
-    }, (err) => {
-      if (err) {
-        leaf.status = 'error';
-        leaf.error = err.message;
-        reject(err);
-      } else {
-        leaf.status = 'done';
-        leaf.transferred = leaf.size;
-        resolve();
-      }
-    });
+    }, (err) => done(err));
   });
 }
 
@@ -186,7 +200,17 @@ function getFile(sftp, leaf, job) {
   return new Promise((resolve, reject) => {
     leaf.status = 'active';
     leaf.transferred = 0;
-    let prev = 0;
+    let prev = 0, settled = false;
+    const done = (err) => {
+      if (settled) return;
+      settled = true;
+      leaf._abort = null;
+      if (err) return reject(err);
+      leaf.status = 'done';
+      leaf.transferred = leaf.size;
+      resolve();
+    };
+    leaf._abort = (err) => done(err || new Error('cancelled'));
     sftp.fastGet(leaf.src, leaf.dst, {
       step: (transferred) => {
         job.transferredBytes += (transferred - prev);
@@ -194,17 +218,7 @@ function getFile(sftp, leaf, job) {
         prev = transferred;
         emitProgress(job);
       },
-    }, (err) => {
-      if (err) {
-        leaf.status = 'error';
-        leaf.error = err.message;
-        reject(err);
-      } else {
-        leaf.status = 'done';
-        leaf.transferred = leaf.size;
-        resolve();
-      }
-    });
+    }, (err) => done(err));
   });
 }
 
@@ -218,12 +232,19 @@ function pushLeaf(job, leaf) {
     transferred: 0,
     status: 'waiting',
     error: null,
+    _sftp: null,
+    _sftpSession: null,
+    _cancel: false,
+    _abort: null,
   });
 }
 
 // ---- Planning: expand items[] into leaf-file jobs and pre-create dest dirs ----
-async function planUpload(job, sftp) {
-  for (const it of job.items) {
+// `items` defaults to job.items; appendItems passes a fresh batch so only the
+// newly-added leaves get their destination dirs ensured.
+async function planUpload(job, sftp, items = job.items) {
+  const startLen = job.leaves.length;
+  for (const it of items) {
     let stat;
     try { stat = await fsp.stat(it.src); }
     catch (err) { job.errors.push({ src: it.src, message: 'stat failed: ' + err.message }); continue; }
@@ -241,15 +262,16 @@ async function planUpload(job, sftp) {
     }
   }
   const dirs = new Set();
-  for (const l of job.leaves) dirs.add(posixDirname(l.dst));
+  for (let k = startLen; k < job.leaves.length; k++) dirs.add(posixDirname(job.leaves[k].dst));
   for (const d of dirs) {
     try { await sftpEnsureDir(sftp, d); }
     catch (_) { /* surfaced per-leaf during putFile */ }
   }
 }
 
-async function planDownload(job, sftp) {
-  for (const it of job.items) {
+async function planDownload(job, sftp, items = job.items) {
+  const startLen = job.leaves.length;
+  for (const it of items) {
     const stat = await sftpStat(sftp, it.src);
     if (!stat) { job.errors.push({ src: it.src, message: 'remote not found' }); continue; }
     if (stat.isFile()) {
@@ -268,7 +290,7 @@ async function planDownload(job, sftp) {
     }
   }
   const dirs = new Set();
-  for (const l of job.leaves) dirs.add(path.dirname(l.dst));
+  for (let k = startLen; k < job.leaves.length; k++) dirs.add(path.dirname(job.leaves[k].dst));
   for (const d of dirs) {
     try { await fsp.mkdir(d, { recursive: true }); }
     catch (_) { /* surfaced per-leaf during getFile */ }
@@ -276,8 +298,9 @@ async function planDownload(job, sftp) {
 }
 
 // ---- R2R: planning + relay driver ----
-async function planR2R(job, srcSftp, dstSftp) {
-  for (const it of job.items) {
+async function planR2R(job, srcSftp, dstSftp, items = job.items) {
+  const startLen = job.leaves.length;
+  for (const it of items) {
     const stat = await sftpStat(srcSftp, it.src);
     if (!stat) { job.errors.push({ src: it.src, message: 'remote not found' }); continue; }
     if (stat.isFile()) {
@@ -296,7 +319,7 @@ async function planR2R(job, srcSftp, dstSftp) {
     }
   }
   const dirs = new Set();
-  for (const l of job.leaves) dirs.add(posixDirname(l.dst));
+  for (let k = startLen; k < job.leaves.length; k++) dirs.add(posixDirname(job.leaves[k].dst));
   for (const d of dirs) {
     try { await sftpEnsureDir(dstSftp, d); }
     catch (_) { /* surfaced per-leaf during upload phase */ }
@@ -304,12 +327,23 @@ async function planR2R(job, srcSftp, dstSftp) {
 }
 
 // Relay one leaf: src(SFTP) → local temp → dst(SFTP). Cleans up its temp file.
+// Updates leaf._sftp/_sftpSession per phase so a cancel kills the right channel.
 function relayLeafTransfer(srcSftp, dstSftp, leaf, tempPath, job) {
   return new Promise((resolve, reject) => {
     leaf.status = 'active';
     leaf.transferred = 0;
     leaf.phase = 'download';
-    let prev = 0;
+    leaf._sftp = srcSftp;
+    leaf._sftpSession = job.sessionId;
+    let prev = 0, settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      leaf._abort = null;
+      fsp.unlink(tempPath).catch(() => {});
+      reject(err);
+    };
+    leaf._abort = (err) => fail(err || new Error('cancelled'));
 
     srcSftp.fastGet(leaf.src, tempPath, {
       step: (transferred) => {
@@ -319,15 +353,13 @@ function relayLeafTransfer(srcSftp, dstSftp, leaf, tempPath, job) {
         emitProgress(job);
       },
     }, (downErr) => {
-      if (downErr) {
-        leaf.status = 'error';
-        leaf.error = 'download: ' + downErr.message;
-        fsp.unlink(tempPath).catch(() => {});
-        return reject(downErr);
-      }
+      if (settled) return;
+      if (downErr) return fail(downErr);
       // Phase 2: upload from local temp to dst
       leaf.phase = 'upload';
       leaf.transferred = 0;
+      leaf._sftp = dstSftp;
+      leaf._sftpSession = job.dstSessionId;
       prev = 0;
       dstSftp.fastPut(tempPath, leaf.dst, {
         step: (transferred) => {
@@ -337,13 +369,11 @@ function relayLeafTransfer(srcSftp, dstSftp, leaf, tempPath, job) {
           emitProgress(job);
         },
       }, (upErr) => {
-        // Always try to delete temp, even on success
+        if (settled) return;
         fsp.unlink(tempPath).catch(() => {});
-        if (upErr) {
-          leaf.status = 'error';
-          leaf.error = 'upload: ' + upErr.message;
-          return reject(upErr);
-        }
+        if (upErr) return fail(upErr);
+        settled = true;
+        leaf._abort = null;
         leaf.status = 'done';
         leaf.transferred = leaf.size;
         resolve();
@@ -352,11 +382,128 @@ function relayLeafTransfer(srcSftp, dstSftp, leaf, tempPath, job) {
   });
 }
 
+// ---- Cancellation ----
+// Best-effort removal of the partially-written destination file after a cancel.
+async function deletePartial(job, leaf) {
+  try {
+    if (job.direction === 'download') {
+      await fsp.unlink(leaf.dst).catch(() => {});
+    } else if (job.direction === 'upload') {
+      await sessions.removeRecursive(job.sessionId, leaf.dst).catch(() => {});
+    } else { // r2r — dst lives on the destination session
+      await sessions.removeRecursive(job.dstSessionId, leaf.dst).catch(() => {});
+    }
+  } catch (_) { /* best-effort */ }
+}
+
+// Kill the channel currently moving `leaf` (so fastPut/fastGet errors out) and
+// settle its promise immediately via the registered abort.
+function abortLeaf(leaf) {
+  if (leaf._sftp) sessions.discardSftp(leaf._sftpSession, leaf._sftp);
+  if (leaf._abort) leaf._abort(new Error('cancelled'));
+}
+
+function cancelLeaf(job, leafId) {
+  const leaf = job.leaves[leafId];
+  if (!leaf) return false;
+  if (leaf.status === 'done' || leaf.status === 'error' || leaf.status === 'cancelled') return true;
+  leaf._cancel = true;
+  if (leaf.status === 'active') abortLeaf(leaf);
+  return true;
+}
+
+function cancelJob(job) {
+  job.cancelled = true;
+  for (const leaf of job.leaves) {
+    if (leaf.status === 'active') abortLeaf(leaf);
+  }
+  emitProgress(job, true);
+  return true;
+}
+
+// ---- Dynamic-queue engine (upload/download; supports appendItems) ----
+function maybeFinalize(job) {
+  if (job.finished || job._appending) return;
+  if (job.activeWorkers > 0) return;
+  const drained = job.nextIdx >= job.leaves.length;
+  if (!drained && !job.cancelled) return;
+  if (job.cancelled) {
+    for (const leaf of job.leaves) {
+      if (leaf.status === 'waiting') leaf.status = 'cancelled';
+    }
+  }
+  sessions.releaseSftp(job.sessionId, job.channels);
+  complete(job, 'done', { ok: true, errors: job.errors });
+}
+
+function pump(job) {
+  if (job.finished) return;
+  while (!job.cancelled && job.idle.length > 0 && job.nextIdx < job.leaves.length) {
+    const sftp = job.idle.pop();
+    job.activeWorkers++;
+    runWorker(job, sftp);
+  }
+  maybeFinalize(job);
+}
+
+async function runWorker(job, sftp) {
+  try {
+    while (!job.cancelled) {
+      const i = job.nextIdx;
+      if (i >= job.leaves.length) break;
+      job.nextIdx++;
+      const leaf = job.leaves[i];
+
+      if (leaf._cancel) {                 // cancelled while waiting — skip it
+        leaf.status = 'cancelled';
+        job.doneFiles++;
+        emitProgress(job, true);
+        continue;
+      }
+
+      leaf._sftp = sftp;
+      leaf._sftpSession = job.sessionId;
+      let channelDead = false;
+      try {
+        await job._transferOne(sftp, leaf, job);
+      } catch (err) {
+        if (leaf._cancel || job.cancelled) {
+          leaf.status = 'cancelled';
+          leaf.error = null;
+          channelDead = true;            // cancel works by killing the channel
+          await deletePartial(job, leaf);
+        } else {
+          leaf.status = 'error';
+          leaf.error = err.message;
+        }
+      } finally {
+        leaf._sftp = null;
+      }
+      job.doneFiles++;
+      emitProgress(job, true);
+
+      if (job.cancelled) break;
+      if (channelDead) {
+        // Individual-leaf cancel killed this channel; grab a fresh one to keep going.
+        const repl = await sessions.checkoutSftp(job.sessionId, 1).catch(() => []);
+        if (!repl.length) { sftp = null; break; }
+        sftp = repl[0];
+        job.channels.push(sftp);
+      }
+    }
+  } catch (_) { /* never let a worker reject unhandled */ }
+  job.activeWorkers--;
+  if (sftp) job.idle.push(sftp);          // dead channels are dropped (sftp === null)
+  maybeFinalize(job);
+}
+
 // ---- Batch drivers ----
 async function startUpDown(job) {
-  const channels = await sessions.acquireSftpPool(job.sessionId, job.workers);
+  const channels = await sessions.checkoutSftp(job.sessionId, job.workers);
   if (!channels.length) throw new Error('no SFTP channels available');
   job.workers = channels.length;
+  job.channels = channels.slice();
+  job.idle = channels.slice();
 
   if (job.direction === 'upload') await planUpload(job, channels[0]);
   else await planDownload(job, channels[0]);
@@ -365,30 +512,31 @@ async function startUpDown(job) {
   job.totalBytes = job.leaves.reduce((s, l) => s + (l.size || 0), 0);
   emitProgress(job, true);
 
-  if (job.leaves.length === 0) {
-    complete(job, 'done', { ok: true, errors: job.errors });
-    return;
-  }
+  job._transferOne = (job.direction === 'upload') ? putFile : getFile;
+  pump(job);   // launches workers; finalize happens via maybeFinalize
+}
 
-  let idx = 0;
-  const transferOne = (job.direction === 'upload') ? putFile : getFile;
-
-  async function worker(sftp) {
-    while (true) {
-      const i = idx++;
-      if (i >= job.leaves.length) return;
-      const leaf = job.leaves[i];
-      try {
-        await transferOne(sftp, leaf, job);
-      } catch (_) { /* leaf.status/error already set */ }
-      job.doneFiles++;
-      emitProgress(job, true);
+// Append more files to a still-running up/down job (same session + direction).
+// Returns false if the job already finished — caller should start a new job.
+async function appendItems(job, items) {
+  if (job.finished || job.direction === 'r2r') return false;
+  job._appending = true;
+  try {
+    const [planSftp] = await sessions.checkoutSftp(job.sessionId, 1).catch(() => []);
+    try {
+      if (job.direction === 'upload') await planUpload(job, planSftp || job.channels[0], items);
+      else await planDownload(job, planSftp || job.channels[0], items);
+    } finally {
+      if (planSftp) sessions.releaseSftp(job.sessionId, [planSftp]);
     }
+    job.totalFiles = job.leaves.length;
+    job.totalBytes = job.leaves.reduce((s, l) => s + (l.size || 0), 0);
+  } finally {
+    job._appending = false;
   }
-
-  const activeChannels = channels.slice(0, Math.min(channels.length, job.leaves.length));
-  await Promise.all(activeChannels.map((sftp) => worker(sftp)));
-  complete(job, 'done', { ok: true, errors: job.errors });
+  emitProgress(job, true);
+  pump(job);
+  return true;
 }
 
 async function startR2R(job) {
@@ -396,13 +544,15 @@ async function startR2R(job) {
   let tempCreated = false;
   try {
     const [srcChannels, dstChannels] = await Promise.all([
-      sessions.acquireSftpPool(job.sessionId, job.workers),
-      sessions.acquireSftpPool(job.dstSessionId, job.workers),
+      sessions.checkoutSftp(job.sessionId, job.workers),
+      sessions.checkoutSftp(job.dstSessionId, job.workers),
     ]);
     if (!srcChannels.length || !dstChannels.length) {
       throw new Error('no SFTP channels available');
     }
     job.workers = Math.min(srcChannels.length, dstChannels.length);
+    job.srcChannels = srcChannels.slice();
+    job.dstChannels = dstChannels.slice();
 
     await fsp.mkdir(tempDir, { recursive: true });
     tempCreated = true;
@@ -415,29 +565,71 @@ async function startR2R(job) {
     emitProgress(job, true);
 
     if (job.leaves.length === 0) {
+      sessions.releaseSftp(job.sessionId, srcChannels);
+      sessions.releaseSftp(job.dstSessionId, dstChannels);
       complete(job, 'done', { ok: true, errors: job.errors });
       return;
     }
 
     let idx = 0;
     async function worker(i) {
-      const srcSftp = srcChannels[i % srcChannels.length];
-      const dstSftp = dstChannels[i % dstChannels.length];
-      while (true) {
+      let srcSftp = srcChannels[i % srcChannels.length];
+      let dstSftp = dstChannels[i % dstChannels.length];
+      while (!job.cancelled) {
         const k = idx++;
         if (k >= job.leaves.length) return;
         const leaf = job.leaves[k];
+        if (leaf._cancel) {
+          leaf.status = 'cancelled';
+          job.doneFiles++;
+          emitProgress(job, true);
+          continue;
+        }
         const tempPath = path.join(tempDir, String(k));
+        let killedSession = null;
         try {
           await relayLeafTransfer(srcSftp, dstSftp, leaf, tempPath, job);
-        } catch (_) { /* leaf.status/error already set */ }
+        } catch (err) {
+          if (leaf._cancel || job.cancelled) {
+            leaf.status = 'cancelled';
+            leaf.error = null;
+            killedSession = leaf._sftpSession;   // the channel killed by the cancel
+            await deletePartial(job, leaf);
+          } else {
+            leaf.status = 'error';
+            leaf.error = err.message;
+          }
+        } finally {
+          leaf._sftp = null;
+        }
         job.doneFiles++;
         emitProgress(job, true);
+
+        if (job.cancelled) return;
+        if (killedSession) {
+          // Replace whichever side's channel the cancel tore down.
+          if (killedSession === job.sessionId) {
+            const [s2] = await sessions.checkoutSftp(job.sessionId, 1).catch(() => []);
+            if (!s2) return;
+            srcSftp = s2; job.srcChannels.push(s2);
+          } else {
+            const [d2] = await sessions.checkoutSftp(job.dstSessionId, 1).catch(() => []);
+            if (!d2) return;
+            dstSftp = d2; job.dstChannels.push(d2);
+          }
+        }
       }
     }
 
     const workerCount = Math.min(job.workers, job.leaves.length);
     await Promise.all(Array.from({ length: workerCount }, (_, i) => worker(i)));
+    if (job.cancelled) {
+      for (const leaf of job.leaves) {
+        if (leaf.status === 'waiting') leaf.status = 'cancelled';
+      }
+    }
+    sessions.releaseSftp(job.sessionId, job.srcChannels);
+    sessions.releaseSftp(job.dstSessionId, job.dstChannels);
     complete(job, 'done', { ok: true, errors: job.errors });
   } finally {
     if (tempCreated) {
@@ -457,4 +649,4 @@ async function start(job) {
   }
 }
 
-module.exports = { create, get, start, snapshot };
+module.exports = { create, get, start, snapshot, appendItems, cancelJob, cancelLeaf };

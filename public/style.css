@@ -388,7 +388,7 @@ body.dragging-splitter * { user-select: none !important; }
 .leaf-cancel[hidden] { display: none; }
 
 /* --- Dialogs --- */
-dialog#login-dialog, dialog#conflict-dialog {
+dialog#login-dialog, dialog#conflict-dialog, dialog#log-dialog {
   border: none;
   border-radius: 8px;
   padding: 1.5rem;
@@ -445,3 +445,119 @@ dialog::backdrop { background: rgba(0,0,0,0.25); }
   color: #4b5563;
   word-break: break-all;
 }
+
+/* --- Topbar log button --- */
+.topbar .log-btn {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+/* --- Transfer log dialog --- */
+dialog#log-dialog {
+  min-width: 640px;
+  max-width: 90vw;
+  padding: 1rem 1.25rem 1.25rem;
+}
+.log-body { display: flex; flex-direction: column; gap: 0.5rem; max-height: 80vh; }
+.log-head { display: flex; align-items: center; gap: 0.4rem; }
+.log-head h3 { margin: 0; }
+.log-head .spacer { flex: 1; }
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  min-height: 4rem;
+}
+.log-list .log-empty {
+  padding: 1.25rem;
+  text-align: center;
+  color: #9ca3af;
+  font-style: italic;
+}
+.log-entry { border-bottom: 1px solid #f3f4f6; }
+.log-entry:last-child { border-bottom: none; }
+.log-entry-head {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) 130px 80px 80px;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+}
+.log-entry-head:hover { background: #f9fafb; }
+.log-entry.expanded > .log-entry-head { background: #eff6ff; }
+.log-when { color: #6b7280; font-size: 0.85em; font-variant-numeric: tabular-nums; }
+.log-route {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.log-count { font-size: 0.85em; color: #4b5563; text-align: right; }
+.log-bytes {
+  font-size: 0.85em;
+  color: #6b7280;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.log-badge {
+  justify-self: end;
+  font-size: 0.75em;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.log-entry[data-status="done"]      .log-badge { background: #d1fae5; color: #065f46; }
+.log-entry[data-status="error"]     .log-badge { background: #fee2e2; color: #991b1b; }
+.log-entry[data-status="cancelled"] .log-badge { background: #e5e7eb; color: #4b5563; }
+
+/* per-file detail (expanded) */
+.log-files {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0 0.5rem;
+  background: #fafafa;
+  border-top: 1px solid #f3f4f6;
+}
+.log-files .log-file {
+  display: grid;
+  grid-template-columns: 1.3em minmax(0, 1fr) 80px minmax(0, 1.2fr);
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.15rem 0.6rem 0.15rem 1.5rem;
+  font-size: 0.85em;
+}
+.log-files .log-file.empty {
+  display: block;
+  padding-left: 1.5rem;
+  color: #9ca3af;
+  font-style: italic;
+}
+.log-files .lf-icon { text-align: center; }
+.log-files .lf-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+.log-files .lf-size {
+  text-align: right;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+}
+.log-files .lf-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #6b7280;
+}
+.log-files .log-file[data-status="done"]      .lf-status { color: #059669; }
+.log-files .log-file[data-status="error"]     .lf-status { color: #dc2626; }
+.log-files .log-file[data-status="cancelled"] .lf-status { color: #9ca3af; }

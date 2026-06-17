@@ -63,6 +63,8 @@
     listPresets:   ()             => api('GET',  '/api/presets'),
     savePreset:    (p)            => api('POST', '/api/presets', p),
     deletePreset:  (name)         => api('POST', '/api/presets/delete', { name }),
+    fetchLog:      (limit)        => api('GET',  limit ? `/api/log?limit=${limit}` : '/api/log'),
+    clearLog:      ()             => api('POST', '/api/log/clear'),
   };
 
   // ---- Tab health (auto-reconnect feedback) ----
@@ -114,6 +116,12 @@
     r2rToggle:      $('#r2r-toggle'),
     r2rHostSelect:  $('#r2r-host-select'),
     rightTitle:     $('#right-title'),
+    logBtn:         $('#log-btn'),
+    logDialog:      $('#log-dialog'),
+    logList:        $('#log-list'),
+    logRefresh:     $('#log-refresh'),
+    logClear:       $('#log-clear'),
+    logClose:       $('#log-close'),
   };
 
   // ---- Path helpers ----
@@ -1281,6 +1289,121 @@
       dom.splitter.classList.remove('dragging');
     });
   })();
+
+  // ---- Transfer log viewer ----
+  function hostLabel(info) {
+    return info ? sessionLabel(info) : 'Local';
+  }
+  function fmtWhen(ms) {
+    if (!ms) return '';
+    try { return new Date(ms).toLocaleString(); } catch (_) { return ''; }
+  }
+  function dirArrow(direction) {
+    return direction === 'r2r' ? '⇄' : '→';
+  }
+
+  function makeLogFiles(entry) {
+    const wrap = document.createElement('ul');
+    wrap.className = 'log-files';
+    const files = entry.files || [];
+    if (!files.length) {
+      const li = document.createElement('li');
+      li.className = 'log-file empty';
+      li.textContent = entry.error ? `(no files) ${entry.error}` : '(no files)';
+      wrap.appendChild(li);
+      return wrap;
+    }
+    for (const f of files) {
+      const li = document.createElement('li');
+      li.className = 'log-file';
+      li.dataset.status = f.status;
+      const icon = document.createElement('span'); icon.className = 'lf-icon'; icon.textContent = fileIcon(f.name, false);
+      const name = document.createElement('span'); name.className = 'lf-name';
+      name.textContent = f.name; name.title = `${f.src}  →  ${f.dst}`;
+      const size = document.createElement('span'); size.className = 'lf-size'; size.textContent = fmtSize(f.size);
+      const st = document.createElement('span'); st.className = 'lf-status';
+      st.textContent = f.status === 'error' ? `✗ ${f.error || 'error'}`
+                     : f.status === 'cancelled' ? '✕ cancelled'
+                     : f.status === 'done' ? '✓'
+                     : f.status;
+      if (f.error) st.title = f.error;
+      li.append(icon, name, size, st);
+      wrap.appendChild(li);
+    }
+    return wrap;
+  }
+
+  function makeLogEntry(entry) {
+    const li = document.createElement('li');
+    li.className = 'log-entry';
+    const failed = entry.status === 'error' || entry.errorFiles > 0;
+    li.dataset.status = entry.cancelled ? 'cancelled' : (failed ? 'error' : 'done');
+
+    const head = document.createElement('div'); head.className = 'log-entry-head';
+
+    const when = document.createElement('span'); when.className = 'log-when'; when.textContent = fmtWhen(entry.startedAt);
+    const route = document.createElement('span'); route.className = 'log-route';
+    route.textContent = `${hostLabel(entry.srcHost)} ${dirArrow(entry.direction)} ${hostLabel(entry.dstHost)}`;
+    route.title = route.textContent;
+    const count = document.createElement('span'); count.className = 'log-count';
+    count.textContent = `${entry.okFiles}/${entry.totalFiles} files`;
+    if (entry.errorFiles) count.textContent += ` · ${entry.errorFiles} err`;
+    if (entry.cancelledFiles) count.textContent += ` · ${entry.cancelledFiles} cancelled`;
+    const bytes = document.createElement('span'); bytes.className = 'log-bytes'; bytes.textContent = fmtSize(entry.transferredBytes);
+    const badge = document.createElement('span'); badge.className = 'log-badge';
+    badge.textContent = entry.cancelled ? 'cancelled' : (failed ? 'error' : 'done');
+
+    head.append(when, route, count, bytes, badge);
+    li.appendChild(head);
+
+    // Expand/collapse per-file detail on click.
+    let detail = null;
+    head.addEventListener('click', () => {
+      if (detail) { detail.remove(); detail = null; li.classList.remove('expanded'); return; }
+      detail = makeLogFiles(entry);
+      li.appendChild(detail);
+      li.classList.add('expanded');
+    });
+    return li;
+  }
+
+  function renderLog(entries) {
+    dom.logList.replaceChildren();
+    if (!entries || !entries.length) {
+      const li = document.createElement('li');
+      li.className = 'log-empty';
+      li.textContent = 'No transfers logged yet.';
+      dom.logList.appendChild(li);
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const e of entries) frag.appendChild(makeLogEntry(e));
+    dom.logList.appendChild(frag);
+  }
+
+  async function openLog() {
+    try {
+      const data = await Api.fetchLog();
+      renderLog(data.entries || []);
+    } catch (err) {
+      renderLog([]);
+      window.alert('Could not load transfer log: ' + err.message);
+    }
+    if (!dom.logDialog.open) dom.logDialog.showModal();
+  }
+
+  dom.logBtn.addEventListener('click', openLog);
+  dom.logRefresh.addEventListener('click', openLog);
+  dom.logClose.addEventListener('click', () => dom.logDialog.close());
+  dom.logClear.addEventListener('click', async () => {
+    if (!window.confirm('Clear the entire transfer log?')) return;
+    try {
+      await Api.clearLog();
+      renderLog([]);
+    } catch (err) {
+      window.alert('Clear failed: ' + err.message);
+    }
+  });
 
   // ---- Init ----
   loadLocal();

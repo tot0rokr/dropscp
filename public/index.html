@@ -11,6 +11,7 @@
     <div class="tabs" id="tabs" role="tablist"></div>
     <button id="connect-btn" class="tab-add" title="New connection">+</button>
     <button id="r2r-toggle" class="r2r-toggle" title="Remote → Remote mode (needs 2+ tabs)" disabled>R2R</button>
+    <button id="log-btn" class="log-btn" title="Transfer log">🗒 Log</button>
   </header>
 
   <main class="panes">
@@ -88,6 +89,19 @@
         <button type="button" data-conflict="skip">Skip</button>
         <button type="button" data-conflict="overwrite" class="primary">Overwrite</button>
       </div>
+    </div>
+  </dialog>
+
+  <dialog id="log-dialog">
+    <div class="log-body">
+      <div class="log-head">
+        <h3>Transfer log</h3>
+        <span class="spacer"></span>
+        <button type="button" id="log-refresh" title="Refresh">↻</button>
+        <button type="button" id="log-clear" title="Clear all">Clear</button>
+        <button type="button" id="log-close">Close</button>
+      </div>
+      <ul class="log-list" id="log-list"></ul>
     </div>
   </dialog>
 

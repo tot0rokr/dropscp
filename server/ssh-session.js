@@ -74,6 +74,13 @@ function getStatus(sessionId) {
   return s ? s.status : 'missing';
 }
 
+// Safe read of a session's non-secret connection info ({ username, host, port }).
+// Returns null if the session is gone — callers (e.g. transfer logging) tolerate that.
+function getInfo(sessionId) {
+  const s = sessions.get(sessionId);
+  return s ? { ...s.info } : null;
+}
+
 function close(sessionId) {
   const s = sessions.get(sessionId);
   if (!s) return;
@@ -275,6 +282,7 @@ module.exports = {
   mkdir,
   get,
   getStatus,
+  getInfo,
   ensureAlive,
   checkoutSftp,
   releaseSftp,

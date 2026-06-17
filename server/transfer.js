@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const sessions = require('./ssh-session');
+const transferLog = require('./transfer-log');
 
 const jobs = new Map();
 const PROGRESS_INTERVAL_MS = 100;
@@ -116,6 +117,42 @@ function emitProgress(job, force) {
   job.events.emit('progress', snapshot(job));
 }
 
+// Build the persisted log record for a finished job (job summary + per-file detail).
+function buildLogRecord(job) {
+  let ok = 0, err = 0, cancelled = 0;
+  for (const l of job.leaves) {
+    if (l.status === 'done') ok++;
+    else if (l.status === 'error') err++;
+    else if (l.status === 'cancelled') cancelled++;
+  }
+  return {
+    id: job.id,
+    startedAt: job.startedAt,
+    finishedAt: Date.now(),
+    direction: job.direction,            // 'upload' | 'download' | 'r2r'
+    srcHost: job.srcHost,                // { username, host, port } | null (=local)
+    dstHost: job.dstHost,
+    status: job.status,                  // 'done' | 'error'
+    cancelled: job.cancelled,
+    error: job.error || null,            // fatal batch-level error
+    totalFiles: job.totalFiles,
+    okFiles: ok,
+    errorFiles: err,
+    cancelledFiles: cancelled,
+    totalBytes: job.totalBytes,
+    transferredBytes: job.transferredBytes,
+    planErrors: job.errors.slice(),      // planning-stage errors
+    files: job.leaves.map((l) => ({
+      name: l.name,
+      src: l.src,
+      dst: l.dst,
+      size: l.size,
+      status: l.status,
+      error: l.error || null,
+    })),
+  };
+}
+
 function complete(job, kind, payload) {
   // kind is 'done' or 'fail'. We never emit Node's special 'error' event
   // because an unhandled emit on 'error' crashes the process when no SSE
@@ -126,6 +163,8 @@ function complete(job, kind, payload) {
   if (kind === 'fail') job.error = payload.message;
   emitProgress(job, true);
   job.events.emit(kind, payload);
+  // Persist a transfer-log record (best-effort; never let it break completion).
+  try { transferLog.append(buildLogRecord(job)); } catch (_) {}
   setTimeout(() => jobs.delete(job.id), 30_000);
 }
 
@@ -136,6 +175,13 @@ function create({ direction, sessionId, dstSessionId, items, workers }) {
     direction,                     // 'upload' | 'download' | 'r2r'
     sessionId,                     // src session for r2r, the only session for up/down
     dstSessionId,                  // r2r only: destination session
+    // Connection info per end, captured now (the session may be gone by the time
+    // the job finishes). Local end is null; remote ends carry { username, host, port }.
+    startedAt: Date.now(),
+    srcHost: direction === 'upload' ? null : sessions.getInfo(sessionId),
+    dstHost: direction === 'upload' ? sessions.getInfo(sessionId)
+           : direction === 'r2r'    ? sessions.getInfo(dstSessionId)
+           : null,
     items: items.slice(),          // [{ src, dst }, ...] — dst is the FINAL path (includes basename)
     workers: Math.max(1, Math.floor(workers) || 1),
     status: 'pending',

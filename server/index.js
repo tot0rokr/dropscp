@@ -5,6 +5,7 @@ const { loadConfig, clampWorkers } = require('./config');
 const sessions = require('./ssh-session');
 const localFs = require('./local-fs');
 const transfer = require('./transfer');
+const transferLog = require('./transfer-log');
 const presets = require('./presets');
 
 const config = loadConfig();
@@ -91,6 +92,20 @@ app.post('/api/presets', (req, res) => {
 app.post('/api/presets/delete', (req, res) => {
   try {
     res.json({ presets: presets.remove(req.body && req.body.name) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ---- Transfer log ----
+app.get('/api/log', (req, res) => {
+  const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
+  res.json({ entries: transferLog.list(limit) });
+});
+app.post('/api/log/clear', (req, res) => {
+  try {
+    transferLog.clear();
+    res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

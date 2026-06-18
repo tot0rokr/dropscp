@@ -122,6 +122,7 @@
     logRefresh:     $('#log-refresh'),
     logClear:       $('#log-clear'),
     logClose:       $('#log-close'),
+    dateToggle:     $('#date-toggle'),
   };
 
   // ---- Path helpers ----
@@ -148,6 +149,13 @@
     if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' K';
     if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' M';
     return (n / (1024 * 1024 * 1024)).toFixed(2) + ' G';
+  }
+  function fmtDate(secs) {
+    if (!secs) return '';
+    const d = new Date(secs * 1000);
+    if (isNaN(d.getTime())) return '';
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
   function setPath(el, p) { el.textContent = p || '—'; el.title = p || ''; }
   function basename(p) {
@@ -295,7 +303,8 @@
       const icon = document.createElement('span'); icon.className = 'icon'; icon.textContent = fileIcon(e.name, e.isDirectory);
       const name = document.createElement('span'); name.className = 'name'; name.textContent = e.name;
       const size = document.createElement('span'); size.className = 'size'; size.textContent = e.isDirectory ? '' : fmtSize(e.size);
-      li.append(icon, name, size);
+      const date = document.createElement('span'); date.className = 'date'; date.textContent = fmtDate(e.mtime);
+      li.append(icon, name, size, date);
 
       li.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -1404,6 +1413,24 @@
       window.alert('Clear failed: ' + err.message);
     }
   });
+
+  // ---- Date column toggle (show/hide modified date in trees) ----
+  const SHOW_DATES_KEY = 'dropscp.showDates';
+  function applyShowDates(on) {
+    document.body.classList.toggle('show-dates', on);
+    dom.dateToggle.classList.toggle('active', on);
+  }
+  function initDateToggle() {
+    let on = false;
+    try { on = localStorage.getItem(SHOW_DATES_KEY) === '1'; } catch (_) {}
+    applyShowDates(on);
+    dom.dateToggle.addEventListener('click', () => {
+      const next = !document.body.classList.contains('show-dates');
+      applyShowDates(next);
+      try { localStorage.setItem(SHOW_DATES_KEY, next ? '1' : '0'); } catch (_) {}
+    });
+  }
+  initDateToggle();
 
   // ---- Init ----
   loadLocal();

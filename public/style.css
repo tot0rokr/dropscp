@@ -263,6 +263,15 @@ body.dragging-splitter * { user-select: none !important; }
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
+.tree .date {
+  display: none;                /* hidden unless the Date toggle is on */
+  color: #9ca3af;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+body.show-dates .tree .date { display: inline; }
 .tree .empty, .tree .error, .tree .loading {
   color: #9ca3af;
   padding: 0.5rem 0.75rem;
@@ -446,11 +455,16 @@ dialog::backdrop { background: rgba(0,0,0,0.25); }
   word-break: break-all;
 }
 
-/* --- Topbar log button --- */
-.topbar .log-btn {
+/* --- Topbar date toggle + log button --- */
+.topbar .date-toggle, .topbar .log-btn {
   padding: 0.2rem 0.55rem;
   font-size: 0.85em;
   white-space: nowrap;
+}
+.topbar .date-toggle.active {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: white;
 }
 
 /* --- Transfer log dialog --- */

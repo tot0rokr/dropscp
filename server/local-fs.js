@@ -4,9 +4,14 @@ const path = require('path');
 async function ls(dirPath) {
   const abs = path.resolve(dirPath);
   const items = await fs.readdir(abs, { withFileTypes: true });
-  return items.map((e) => ({
-    name: e.name,
-    isDirectory: e.isDirectory(),
+  return Promise.all(items.map(async (e) => {
+    const entry = { name: e.name, isDirectory: e.isDirectory() };
+    try {
+      const st = await fs.stat(path.join(abs, e.name));
+      entry.size = st.size;
+      entry.mtime = Math.floor(st.mtimeMs / 1000);   // epoch seconds (matches sftp attrs.mtime)
+    } catch (_) { /* unreadable entry (perm / dangling symlink) — leave size/mtime undefined */ }
+    return entry;
   }));
 }
 

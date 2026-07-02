@@ -89,6 +89,13 @@ app.post('/api/presets', (req, res) => {
     res.status(400).json({ error: err.message });
   }
 });
+app.post('/api/presets/rename', (req, res) => {
+  try {
+    res.json({ presets: presets.rename(req.body || {}) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 app.post('/api/presets/delete', (req, res) => {
   try {
     res.json({ presets: presets.remove(req.body && req.body.name) });

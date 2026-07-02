@@ -444,10 +444,12 @@ dialog::backdrop { background: rgba(0,0,0,0.25); }
   border-radius: 4px;
   background: white;
 }
+.preset-row #preset-rename,
 .preset-row #preset-delete {
   padding: 0.25rem 0.55rem;
   color: #6b7280;
 }
+.preset-row #preset-rename:hover { color: #2563eb; }
 .preset-row #preset-delete:hover { color: #dc2626; }
 #conflict-message {
   margin: 0 0 0.75rem;

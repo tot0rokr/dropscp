@@ -31,4 +31,22 @@ function remove(name) {
   return cfg.presets;
 }
 
-module.exports = { list, upsert, remove };
+function rename({ name, newName }) {
+  if (!name || !newName) throw new Error('name and newName are required');
+  const nextName = String(newName).trim();
+  if (!nextName) throw new Error('newName is required');
+  const cfg = loadConfig();
+  const list = cfg.presets || [];
+  const target = list.find((p) => p.name === name);
+  if (!target) throw new Error(`preset "${name}" not found`);
+  if (nextName !== name && list.some((p) => p.name === nextName)) {
+    throw new Error(`a preset named "${nextName}" already exists`);
+  }
+  target.name = nextName;
+  list.sort((a, b) => a.name.localeCompare(b.name));
+  cfg.presets = list;
+  saveConfig(cfg);
+  return cfg.presets;
+}
+
+module.exports = { list, upsert, remove, rename };

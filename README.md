@@ -71,7 +71,7 @@ presets (see [Configuration](#configuration)).
 | **Cancel transfers** | Each running job has a `✕` to cancel the whole batch (in-flight files are cut immediately) and each in-flight/queued file has its own `✕`. The partially-written destination file is auto-deleted on cancel. |
 | **Same-host queue merge** | Dropping more files onto the same host in the same direction while a transfer is running folds them into the running job instead of starting a second one — so concurrent jobs never share SFTP channels. Opposite-direction / R2R drops run as separate concurrent jobs with their own channels. |
 | **File type icons** | The tree and transfer list pick an emoji per extension (image, video, audio, archive, code, doc, executable, font, disk image). |
-| **Presets** | Save the non-secret bits of a connection (name + user + host + port) to `config.json`. The login dialog has a dropdown to recall and a button to delete presets. |
+| **Presets** | Save the non-secret bits of a connection (name + user + host + port) to `config.json`. The login dialog has a dropdown to recall and buttons to rename (✎) and delete (✕) presets. |
 | **Multi-host tabs** | One tab per open SSH session. `+` to add, `×` to close (terminates the session). Each tab keeps its own current path and tree state. |
 | **R2R (remote↔remote)** | Toggle button in the top bar; right pane swaps from local to a second remote chosen via dropdown. Drops between the two remotes go through `/api/r2r`. v1 uses a local-relay strategy (src → local temp → dst); direct `scp` via `sshpass` is deferred (see [Roadmap](#roadmap)). |
 | **Resizable splitter** | The divider between the two panes can be dragged to resize. Default 50/50, clamped to [0.1, 0.9], scales proportionally on window resize, not persisted. |
@@ -233,13 +233,23 @@ Upsert a preset (replaces an existing preset by `name`):
 { "name": "dev-vm", "username": "kim", "host": "10.0.0.5", "port": 22 }
 ```
 
+#### `POST /api/presets/rename`
+
+Rename a preset in place (keeps its username/host/port):
+
+```json
+{ "name": "dev-vm", "newName": "staging-vm" }
+```
+
+`400` if `name` doesn't exist or `newName` collides with another preset.
+
 #### `POST /api/presets/delete`
 
 ```json
 { "name": "dev-vm" }
 ```
 
-Both return the updated `{ presets: [...] }`.
+All three return the updated `{ presets: [...] }`.
 
 ### Transfers
 

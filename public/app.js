@@ -62,6 +62,7 @@
     fileop:        (body)         => api('POST', '/api/fileop', body),
     listPresets:   ()             => api('GET',  '/api/presets'),
     savePreset:    (p)            => api('POST', '/api/presets', p),
+    renamePreset:  (name, newName)=> api('POST', '/api/presets/rename', { name, newName }),
     deletePreset:  (name)         => api('POST', '/api/presets/delete', { name }),
     fetchLog:      (limit)        => api('GET',  limit ? `/api/log?limit=${limit}` : '/api/log'),
     clearLog:      ()             => api('POST', '/api/log/clear'),
@@ -100,6 +101,7 @@
     loginError:     $('#login-error'),
     presetSelect:   $('#preset-select'),
     presetSave:     $('#preset-save'),
+    presetRename:   $('#preset-rename'),
     presetDelete:   $('#preset-delete'),
     conflictDialog: $('#conflict-dialog'),
     conflictMessage:$('#conflict-message'),
@@ -1014,6 +1016,23 @@
       state.presets = data.presets;
       populatePresetSelect();
       dom.presetSelect.value = name;
+      dom.loginError.hidden = true;
+    } catch (err) {
+      dom.loginError.textContent = err.message;
+      dom.loginError.hidden = false;
+    }
+  });
+
+  dom.presetRename.addEventListener('click', async () => {
+    const name = dom.presetSelect.value;
+    if (!name) return;
+    const newName = window.prompt('Rename preset:', name);
+    if (!newName || newName === name) return;
+    try {
+      const data = await Api.renamePreset(name, newName);
+      state.presets = data.presets;
+      populatePresetSelect();
+      dom.presetSelect.value = newName.trim();
       dom.loginError.hidden = true;
     } catch (err) {
       dom.loginError.textContent = err.message;

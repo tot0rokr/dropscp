@@ -2,7 +2,7 @@
 (() => {
   // ---- State ----
   function emptyRemoteState() {
-    return { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 };
+    return { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1, history: [], histIdx: -1 };
   }
   // state.tabs[i] = { session: { sessionId, username, host, port }, remote: emptyRemoteState() }
   // state.session and state.remote are LIVE references to the active tab; rebound on switch.
@@ -13,7 +13,7 @@
     activeIdx: -1,
     session: null,
     remote: emptyRemoteState(),
-    local:  { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1 },
+    local:  { path: null, entries: [], sorted: [], selected: new Set(), anchorIdx: -1, history: [], histIdx: -1 },
     r2rMode: false,
     r2rHost: null,
     presets: [],
@@ -161,7 +161,6 @@
     const p = (n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
-  function setPath(el, p) { el.textContent = p || '—'; el.title = p || ''; }
   function basename(p) {
     const trimmed = String(p).replace(/[\\/]+$/, '');
     const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
@@ -365,7 +364,7 @@
   }
 
   // ---- Loaders ----
-  async function loadRemote(p) {
+  async function loadRemote(p, { record = true } = {}) {
     if (!state.session) return;
     clearSelection('remote');
     renderMessage(dom.remoteTree, 'loading', 'loading…');
@@ -374,9 +373,11 @@
       const data = await Api.remoteLs(sid, p || '.');
       state.remote.path = data.path;
       state.remote.entries = data.entries;
-      setPath(dom.remotePath, data.path);
+      renderBreadcrumb('remote', dom.remotePath, data.path);
       renderTree(dom.remoteTree, 'remote', data.path, data.entries,
         (e) => loadRemote(posixJoin(data.path, e.name)));
+      if (record) recordHistory(state.remote, data.path);
+      updateHistButtons('remote');
       // ls succeeded — if the tab was marked dead/reconnecting, the lazy
       // backend reconnect just brought it back. Reflect that.
       setTabStatus(sid, 'connected');
@@ -385,22 +386,24 @@
     }
   }
 
-  async function loadLocal(p) {
+  async function loadLocal(p, { record = true } = {}) {
     clearSelection('local');
     renderMessage(dom.localTree, 'loading', 'loading…');
     try {
       const data = await Api.localLs(p);
       state.local.path = data.path;
       state.local.entries = data.entries;
-      setPath(dom.localPath, data.path);
+      renderBreadcrumb('local', dom.localPath, data.path);
       renderTree(dom.localTree, 'local', data.path, data.entries,
         (e) => loadLocal(joinLocal(data.path, e.name)));
+      if (record) recordHistory(state.local, data.path);
+      updateHistButtons('local');
     } catch (err) {
       renderMessage(dom.localTree, 'error', 'local: ' + err.message);
     }
   }
 
-  async function loadR2R(p) {
+  async function loadR2R(p, { record = true } = {}) {
     if (!state.r2rHost) return;
     clearSelection('r2r');
     renderMessage(dom.localTree, 'loading', 'loading…');
@@ -408,18 +411,134 @@
       const data = await Api.remoteLs(state.r2rHost.session.sessionId, p || '.');
       state.r2rHost.remote.path = data.path;
       state.r2rHost.remote.entries = data.entries;
-      setPath(dom.localPath, data.path);
+      renderBreadcrumb('r2r', dom.localPath, data.path);
       renderTree(dom.localTree, 'r2r', data.path, data.entries,
         (e) => loadR2R(posixJoin(data.path, e.name)));
+      if (record) recordHistory(state.r2rHost.remote, data.path);
+      updateHistButtons('r2r');
     } catch (err) {
       renderMessage(dom.localTree, 'error', 'r2r: ' + err.message);
     }
   }
 
-  function navigateSide(side, p) {
-    if (side === 'remote') return loadRemote(p);
-    if (side === 'r2r')    return loadR2R(p);
-    return loadLocal(p);
+  function navigateSide(side, p, opts) {
+    if (side === 'remote') return loadRemote(p, opts);
+    if (side === 'r2r')    return loadR2R(p, opts);
+    return loadLocal(p, opts);
+  }
+
+  // ---- Breadcrumb path bar ----
+  // The path header is a row of clickable/droppable segments: click an ancestor
+  // to navigate there; drag files onto an ancestor to move (same side) or
+  // transfer (cross side) them into it.
+  function pathSegments(side, fullPath) {
+    const raw = String(fullPath);
+    if (side === 'local') {
+      const norm = raw.replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+      if (norm === '') return [{ label: '/', path: '/' }];
+      const parts = norm.split('/');
+      const segs = [];
+      let acc = '';
+      parts.forEach((part, i) => {
+        if (i === 0) {
+          if (part === '') { acc = '/'; segs.push({ label: '/', path: '/' }); }
+          else { acc = part + '/'; segs.push({ label: part, path: acc }); }   // drive: "C:" -> "C:/"
+        } else {
+          acc = acc.replace(/\/+$/, '') + '/' + part;
+          segs.push({ label: part, path: acc });
+        }
+      });
+      return segs;
+    }
+    // posix (remote / r2r)
+    const norm = raw.replace(/\/+$/, '');
+    const segs = [{ label: '/', path: '/' }];
+    let acc = '';
+    norm.split('/').forEach((part) => {
+      if (part === '') return;
+      acc = acc + '/' + part;
+      segs.push({ label: part, path: acc });
+    });
+    return segs;
+  }
+
+  function renderBreadcrumb(side, el, fullPath) {
+    el.replaceChildren();
+    if (!fullPath) { el.textContent = '—'; el.title = ''; return; }
+    el.title = fullPath;
+    const segs = pathSegments(side, fullPath);
+    segs.forEach((seg, i) => {
+      if (i > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'crumb-sep';
+        sep.textContent = '›';
+        el.appendChild(sep);
+      }
+      const isCurrent = i === segs.length - 1;
+      const crumb = document.createElement('span');
+      crumb.className = 'crumb' + (isCurrent ? ' crumb-current' : '');
+      crumb.textContent = seg.label;
+      crumb.title = seg.path;
+      // The current dir (last crumb) is neither a nav target nor a drop target —
+      // dropping there would just be a move-into-same-folder. Only ancestors act.
+      if (!isCurrent) {
+        crumb.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          navigateSide(side, seg.path);
+        });
+        crumb.addEventListener('dragover', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          ev.dataTransfer.dropEffect = 'copy';
+          crumb.classList.add('drag-over');
+        });
+        crumb.addEventListener('dragleave', () => crumb.classList.remove('drag-over'));
+        crumb.addEventListener('drop', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          crumb.classList.remove('drag-over');
+          let payload;
+          try { payload = JSON.parse(ev.dataTransfer.getData('application/json')); }
+          catch { return; }
+          if (!payload || !Array.isArray(payload.items) || payload.items.length === 0) return;
+          if (payload.side === side) doMove(side, payload.items, seg.path);
+          else initiateTransfer(payload.side, payload.items, side, seg.path);
+        });
+      }
+      el.appendChild(crumb);
+    });
+    el.scrollLeft = el.scrollWidth;   // keep the current dir (rightmost) in view
+  }
+
+  // ---- Per-pane navigation history (back / forward) ----
+  function recordHistory(pane, resolvedPath) {
+    if (!pane) return;
+    if (pane.histIdx >= 0 && pane.history[pane.histIdx] === resolvedPath) return;   // dedupe refresh
+    pane.history = pane.history.slice(0, pane.histIdx + 1);   // drop the forward branch
+    pane.history.push(resolvedPath);
+    pane.histIdx = pane.history.length - 1;
+  }
+
+  function updateHistButtons(side) {
+    const paneEl = side === 'remote' ? dom.remotePane : dom.localPane;
+    const pane = paneState(side);
+    const back = paneEl.querySelector('[data-action="back"]');
+    const fwd = paneEl.querySelector('[data-action="forward"]');
+    if (back) back.disabled = !pane || pane.histIdx <= 0;
+    if (fwd) fwd.disabled = !pane || pane.histIdx >= pane.history.length - 1;
+  }
+
+  function goBack(side) {
+    const pane = paneState(side);
+    if (!pane || pane.histIdx <= 0) return;
+    pane.histIdx -= 1;
+    navigateSide(side, pane.history[pane.histIdx], { record: false });
+  }
+  function goForward(side) {
+    const pane = paneState(side);
+    if (!pane || pane.histIdx >= pane.history.length - 1) return;
+    pane.histIdx += 1;
+    navigateSide(side, pane.history[pane.histIdx], { record: false });
   }
 
   // ---- Pane action buttons (..  mkdir  refresh  delete  rename  copy) ----
@@ -640,6 +759,10 @@
         } catch (err) {
           window.alert('mkdir failed: ' + err.message);
         }
+      } else if (action === 'back') {
+        goBack(side);
+      } else if (action === 'forward') {
+        goForward(side);
       } else if (action === 'goto') {
         await doGoto(side);
       } else if (action === 'delete') {
@@ -1156,9 +1279,10 @@
       loadRemote('.');
     } else {
       // Restore cached listing without an extra network call
-      setPath(dom.remotePath, state.remote.path);
+      renderBreadcrumb('remote', dom.remotePath, state.remote.path);
       renderTree(dom.remoteTree, 'remote', state.remote.path, state.remote.entries,
         (e) => loadRemote(posixJoin(state.remote.path, e.name)));
+      updateHistButtons('remote');
     }
     refreshR2RAvailability();
   }
@@ -1171,8 +1295,9 @@
       state.activeIdx = -1;
       bindActiveTab();
       renderTabs();
-      setPath(dom.remotePath, '');
+      renderBreadcrumb('remote', dom.remotePath, '');
       renderMessage(dom.remoteTree, 'empty', 'connect to a host to browse');
+      updateHistButtons('remote');
       refreshR2RAvailability();
       return;
     }

@@ -199,15 +199,31 @@ body.dragging-splitter * { user-select: none !important; }
 .pane-title { font-weight: 600; color: #374151; }
 .path {
   flex: 1;
+  min-width: 0;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 0.85em;
   color: #4b5563;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 0.05rem;
+  overflow-x: auto;
   white-space: nowrap;
-  direction: rtl;
-  text-align: left;
+  scrollbar-width: thin;
 }
+.path::-webkit-scrollbar { height: 5px; }
+.path::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+.crumb {
+  flex: 0 0 auto;
+  padding: 0.05rem 0.25rem;
+  border-radius: 3px;
+  color: #2563eb;
+  cursor: pointer;
+}
+.crumb:hover { background: #e0e7ff; text-decoration: underline; }
+.crumb.crumb-current { color: #374151; font-weight: 600; cursor: default; }
+.crumb.crumb-current:hover { background: transparent; text-decoration: none; }
+.crumb.drag-over { background: #bfdbfe; outline: 1px solid #3b82f6; outline-offset: -1px; }
+.crumb-sep { flex: 0 0 auto; color: #9ca3af; user-select: none; }
 .actions { display: flex; gap: 0.25rem; }
 .actions button { padding: 0.2rem 0.5rem; font-size: 0.9em; }
 

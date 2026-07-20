@@ -62,6 +62,8 @@ presets (see [Configuration](#configuration)).
 |---|---|
 | Side-by-side trees | Remote (left, active tab) and Local (right). Double-click a folder to navigate; `..` button to go up. |
 | **Go to path** | The 🔍 button in either pane prompts for a path: a directory opens it, a file opens its folder and highlights the file. Works independently on each side (remote and local). |
+| **Breadcrumb path bar** | The path header is a row of clickable segments. Click any ancestor to jump there. Drag selected files/folders onto an ancestor segment to move them up into it (same host/side), or transfer them there from the other side — not just one level up, but to whichever segment you drop on. |
+| **Back / forward history** | `←` / `→` buttons per pane walk that pane's own navigation history. History is kept per remote tab and for the local pane; refreshes don't create duplicate entries. |
 | Drag-and-drop transfer | Local↔remote in either direction. Drop on the pane background → current folder; drop on a folder row → into that folder. |
 | Folder transfers | Drop a folder: it's recursively walked and every leaf file is queued. Empty folders are not created on the destination (v1 limitation). |
 | **Multi-select** | Click a row to select it; Ctrl/⌘-click to toggle; Shift-click to range-select. Clicking the pane background clears the selection. |

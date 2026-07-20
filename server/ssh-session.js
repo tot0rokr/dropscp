@@ -197,6 +197,39 @@ async function mkdir(sessionId, dirPath) {
   });
 }
 
+function posixDirname(p) {
+  const t = String(p).replace(/\/+$/, '');
+  const i = t.lastIndexOf('/');
+  if (i <= 0) return '/';
+  return t.slice(0, i);
+}
+function posixBasename(p) {
+  const t = String(p).replace(/\/+$/, '');
+  const i = t.lastIndexOf('/');
+  return i < 0 ? t : t.slice(i + 1);
+}
+
+// Resolve a path and classify it. `dir` is where a caller should navigate to:
+// the path itself if it's a directory, else its parent (so a file "goes to"
+// its folder). `name` is the basename when it's a file (for selection), else ''.
+// Follows symlinks (realpath + stat) so a link to a directory navigates in.
+async function statPath(sessionId, p) {
+  const s = await ensureAlive(sessionId);
+  const target = await new Promise((resolve) => {
+    s.sftp.realpath(p || '.', (err, resolved) => resolve(err ? (p || '.') : resolved));
+  });
+  const attrs = await new Promise((resolve, reject) => {
+    s.sftp.stat(target, (err, a) => (err ? reject(err) : resolve(a)));
+  });
+  const isDirectory = attrs.isDirectory();
+  return {
+    path: target,
+    isDirectory,
+    dir: isDirectory ? target : posixDirname(target),
+    name: isDirectory ? '' : posixBasename(target),
+  };
+}
+
 // ---- Same-host file operations (F8) ----
 
 async function rename(sessionId, oldPath, newPath) {
@@ -280,6 +313,7 @@ module.exports = {
   close,
   ls,
   mkdir,
+  statPath,
   get,
   getStatus,
   getInfo,

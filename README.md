@@ -61,6 +61,7 @@ presets (see [Configuration](#configuration)).
 | Feature | Notes |
 |---|---|
 | Side-by-side trees | Remote (left, active tab) and Local (right). Double-click a folder to navigate; `..` button to go up. |
+| **Go to path** | The 🔍 button in either pane prompts for a path: a directory opens it, a file opens its folder and highlights the file. Works independently on each side (remote and local). |
 | Drag-and-drop transfer | Local↔remote in either direction. Drop on the pane background → current folder; drop on a folder row → into that folder. |
 | Folder transfers | Drop a folder: it's recursively walked and every leaf file is queued. Empty folders are not created on the destination (v1 limitation). |
 | **Multi-select** | Click a row to select it; Ctrl/⌘-click to toggle; Shift-click to range-select. Clicking the pane background clears the selection. |
@@ -208,6 +209,14 @@ absolute path).
 { "sessionId": "...", "path": "/some/new/dir" }
 ```
 
+#### `GET /api/stat?sessionId=...&path=/some/target`
+
+Resolves a remote path and classifies it (follows symlinks). Returns
+`{ path, isDirectory, dir, name }` — `path` is the resolved absolute path,
+`dir` is where a client should navigate (the path itself if a directory, its
+parent if a file), and `name` is the basename when it's a file (else `''`).
+`400` if the path doesn't exist. Powers the pane's **go-to-path** search.
+
 #### `GET /api/local/ls?path=C:/...`
 
 Lists a local directory. Returns `{ path, entries: [{ name, isDirectory }] }`.
@@ -218,6 +227,11 @@ Path defaults to the user's home dir when omitted.
 ```json
 { "path": "C:/some/new/dir" }
 ```
+
+#### `GET /api/local/stat?path=C:/...`
+
+Local counterpart of `/api/stat`. Returns `{ path, isDirectory, dir, name }`;
+`400` if the path doesn't exist.
 
 ### Presets
 

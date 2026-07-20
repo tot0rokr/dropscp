@@ -53,8 +53,10 @@
     sessionStatus: (sid)          => api('GET',  `/api/session/status?sessionId=${encodeURIComponent(sid)}`),
     remoteLs:      (sid, p)       => api('GET',  `/api/ls?sessionId=${encodeURIComponent(sid)}&path=${encodeURIComponent(p)}`),
     remoteMkdir:   (sid, p)       => api('POST', '/api/mkdir', { sessionId: sid, path: p }),
+    remoteStat:    (sid, p)       => api('GET',  `/api/stat?sessionId=${encodeURIComponent(sid)}&path=${encodeURIComponent(p)}`),
     localLs:       (p)            => api('GET',  p ? `/api/local/ls?path=${encodeURIComponent(p)}` : '/api/local/ls'),
     localMkdir:    (p)            => api('POST', '/api/local/mkdir', { path: p }),
+    localStat:     (p)            => api('GET',  `/api/local/stat?path=${encodeURIComponent(p)}`),
     startTransfer: (body)         => api('POST', '/api/transfer', body),
     startR2R:      (body)         => api('POST', '/api/r2r', body),
     appendTransfer:(jobId, items) => api('POST', `/api/transfer/${jobId}/append`, { items }),
@@ -568,6 +570,43 @@
     navigateSide(side, pane.path);
   }
 
+  // Select a single entry by name in the freshly loaded listing — used after a
+  // path search that resolved to a file: we navigate to the folder, then
+  // highlight (and scroll to) the file so the user sees where it landed.
+  function selectEntryByName(side, name) {
+    const pane = paneState(side);
+    const idx = pane.sorted.findIndex((e) => e.name === name);
+    if (idx < 0) return;
+    const fullPath = rowPath(side, pane.path, pane.sorted[idx].name);
+    pane.selected.clear();
+    pane.selected.add(fullPath);
+    pane.anchorIdx = idx;
+    refreshSelectionClasses(side);
+    updateActionButtons();
+    const ul = side === 'remote' ? dom.remoteTree : dom.localTree;
+    const li = ul.querySelector(`li[data-path="${CSS.escape(fullPath)}"]`);
+    if (li) li.scrollIntoView({ block: 'nearest' });
+  }
+
+  async function doGoto(side) {
+    const pane = paneState(side);
+    const input = window.prompt('Go to path — a directory opens, a file opens its folder:', pane.path || '');
+    if (input == null) return;
+    const target = input.trim();
+    if (!target) return;
+    let info;
+    try {
+      info = side === 'local'
+        ? await Api.localStat(target)
+        : await Api.remoteStat(sessionIdForSide(side), target);
+    } catch (err) {
+      window.alert('Path not found: ' + err.message);
+      return;
+    }
+    await navigateSide(side, info.dir);
+    if (!info.isDirectory && info.name) selectEntryByName(side, info.name);
+  }
+
   document.querySelectorAll('[data-action]').forEach((btn) => {
     btn.addEventListener('click', async (ev) => {
       ev.stopPropagation();
@@ -601,6 +640,8 @@
         } catch (err) {
           window.alert('mkdir failed: ' + err.message);
         }
+      } else if (action === 'goto') {
+        await doGoto(side);
       } else if (action === 'delete') {
         await doDelete(side);
       } else if (action === 'rename') {

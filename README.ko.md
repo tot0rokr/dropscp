@@ -60,6 +60,7 @@ npm run dev          # node --watch — 파일 변경 시 재시작
 | 기능 | 설명 |
 |---|---|
 | 좌우 트리 | 원격 (좌, 활성 탭) + 로컬 (우). 폴더 더블클릭으로 진입, `..` 버튼으로 상위. |
+| **경로 이동** | 각 패널의 🔍 버튼이 경로를 물어봄: 디렉터리면 열고, 파일이면 그 폴더를 열어 파일을 하이라이트. 양쪽 (원격/로컬) 각각 독립 동작. |
 | 드래그 앤 드롭 전송 | 로컬↔원격 양방향. 패널 배경에 드롭 → 현재 폴더, 폴더 행에 드롭 → 해당 폴더 안. |
 | 폴더 전송 | 폴더 드롭 시 재귀 워크해서 모든 leaf 파일을 큐에. 빈 디렉터리는 대상에 생성되지 않음 (v1 제약). |
 | **멀티 셀렉트** | 클릭으로 선택, Ctrl/⌘-클릭으로 토글, Shift-클릭으로 범위 선택. 패널 배경 클릭하면 해제. |
@@ -197,6 +198,13 @@ SFTP 세션을 엽니다.
 { "sessionId": "...", "path": "/some/new/dir" }
 ```
 
+#### `GET /api/stat?sessionId=...&path=/some/target`
+
+원격 경로를 resolve하고 분류 (심링크 따라감). `{ path, isDirectory, dir, name }`
+반환 — `path`는 resolve된 절대 경로, `dir`은 이동해야 할 위치 (디렉터리면 자기
+자신, 파일이면 부모), `name`은 파일일 때 basename (아니면 `''`). 경로가 없으면
+`400`. 패널의 **경로 이동** 검색이 이걸 씀.
+
 #### `GET /api/local/ls?path=C:/...`
 
 로컬 디렉터리 목록. `{ path, entries: [{ name, isDirectory }] }` 반환. path
@@ -207,6 +215,10 @@ SFTP 세션을 엽니다.
 ```json
 { "path": "C:/some/new/dir" }
 ```
+
+#### `GET /api/local/stat?path=C:/...`
+
+`/api/stat`의 로컬 버전. `{ path, isDirectory, dir, name }` 반환, 경로 없으면 `400`.
 
 ### Preset
 

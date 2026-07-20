@@ -43,4 +43,19 @@ function resolve(p) {
   return path.resolve(p);
 }
 
-module.exports = { ls, mkdir, rename, remove, copy, resolve };
+// Resolve a path and classify it. `dir` is where a caller should navigate to:
+// the path itself if it's a directory, else its parent. `name` is the basename
+// when it's a file (for selection), else ''. Follows symlinks.
+async function statPath(p) {
+  const abs = path.resolve(p);
+  const st = await fs.stat(abs);
+  const isDirectory = st.isDirectory();
+  return {
+    path: abs,
+    isDirectory,
+    dir: isDirectory ? abs : path.dirname(abs),
+    name: isDirectory ? '' : path.basename(abs),
+  };
+}
+
+module.exports = { ls, mkdir, rename, remove, copy, resolve, statPath };

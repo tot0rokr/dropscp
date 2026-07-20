@@ -59,6 +59,14 @@ app.post('/api/mkdir', async (req, res) => {
   }
 });
 
+app.get('/api/stat', async (req, res) => {
+  try {
+    res.json(await sessions.statPath(req.query.sessionId, req.query.path || '.'));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/local/ls', async (req, res) => {
   try {
     const target = req.query.path || os.homedir();
@@ -73,6 +81,14 @@ app.post('/api/local/mkdir', async (req, res) => {
   try {
     await localFs.mkdir(req.body.path);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/local/stat', async (req, res) => {
+  try {
+    res.json(await localFs.statPath(req.query.path || os.homedir()));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

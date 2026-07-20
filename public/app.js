@@ -840,6 +840,44 @@
   setupDropZone(dom.remotePane);
   setupDropZone(dom.localPane);
 
+  // ---- Drag auto-scroll ----
+  // The browser suppresses the mouse wheel during a native drag, so a long list
+  // can't be scrolled to reach off-screen rows (or the breadcrumb) mid-drag.
+  // While dragging near a tree's top/bottom edge, scroll it automatically.
+  function setupDragAutoScroll(ul) {
+    const EDGE = 90;        // px band at top/bottom that triggers scrolling
+    const MIN_SPEED = 3;    // px/frame at the inner edge of the band (gentle)
+    const MAX_SPEED = 30;   // px/frame right at the very edge (fast)
+    let speed = 0;          // signed px/frame; 0 = idle
+    let raf = null;
+    function tick() {
+      if (speed === 0) { raf = null; return; }
+      ul.scrollTop += speed;
+      raf = requestAnimationFrame(tick);
+    }
+    function stop() { speed = 0; if (raf !== null) { cancelAnimationFrame(raf); raf = null; } }
+    // Speed ramps with depth into the band: gentle near the inner edge, fastest
+    // right at the top/bottom edge (t: 0 → 1).
+    const rampSpeed = (dist) => {
+      const t = Math.max(0, Math.min(1, (EDGE - dist) / EDGE));
+      return MIN_SPEED + t * (MAX_SPEED - MIN_SPEED);
+    };
+    ul.addEventListener('dragover', (ev) => {
+      const rect = ul.getBoundingClientRect();
+      const topDist = ev.clientY - rect.top;
+      const botDist = rect.bottom - ev.clientY;
+      if (topDist < EDGE) speed = -rampSpeed(topDist);
+      else if (botDist < EDGE) speed = rampSpeed(botDist);
+      else speed = 0;
+      if (speed !== 0 && raf === null) raf = requestAnimationFrame(tick);
+    });
+    ul.addEventListener('dragleave', (ev) => { if (!ul.contains(ev.relatedTarget)) stop(); });
+    ul.addEventListener('drop', stop);
+    ul.addEventListener('dragend', stop);
+  }
+  setupDragAutoScroll(dom.remoteTree);
+  setupDragAutoScroll(dom.localTree);
+
   // ---- Conflict dialog (batch-aware) ----
   function askBatchConflict(conflictNames, targetDir) {
     return new Promise((resolve) => {

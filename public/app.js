@@ -113,6 +113,8 @@
     localPath:      $('#local-path'),
     remoteTree:     $('#remote-tree'),
     localTree:      $('#local-tree'),
+    remoteHead:     $('#remote-head'),
+    localHead:      $('#local-head'),
     statusBar:      $('#status-bar'),
     transferList:   $('#transfer-list'),
     panes:          $('.panes'),
@@ -274,6 +276,101 @@
     return side === 'local' ? joinLocal(currentPath, name) : posixJoin(currentPath, name);
   }
 
+  // ---- Sorting ----
+  // Each side keeps its own {key, dir}. The right pane ('local' / 'r2r') shares
+  // one slot so its columns behave consistently across the local↔r2r toggle.
+  // Directories are always grouped on top regardless of key/direction.
+  const SORT_KEYS = new Set(['name', 'size', 'date']);
+  const SORT_STORE_KEY = 'dropscp.sort';
+  const sortState = {
+    remote: { key: 'name', dir: 'asc' },
+    local:  { key: 'name', dir: 'asc' },
+  };
+  function sortSlot(side) { return side === 'remote' ? 'remote' : 'local'; }
+
+  function cmpName(a, b) {
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  }
+  function sortEntries(entries, key, dir) {
+    const factor = dir === 'desc' ? -1 : 1;
+    return entries.slice().sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;   // dirs on top
+      let cmp;
+      if (key === 'size') cmp = (a.size || 0) - (b.size || 0);
+      else if (key === 'date') cmp = (a.mtime || 0) - (b.mtime || 0);
+      else cmp = cmpName(a, b);
+      if (cmp === 0) cmp = cmpName(a, b);   // name as stable tiebreak
+      return cmp * factor;
+    });
+  }
+
+  function persistSort() {
+    try { localStorage.setItem(SORT_STORE_KEY, JSON.stringify(sortState)); } catch (_) {}
+  }
+  function loadPersistedSort() {
+    let raw;
+    try { raw = JSON.parse(localStorage.getItem(SORT_STORE_KEY)); } catch (_) { return; }
+    if (!raw) return;
+    for (const slot of ['remote', 'local']) {
+      const s = raw[slot];
+      if (s && SORT_KEYS.has(s.key) && (s.dir === 'asc' || s.dir === 'desc')) {
+        sortState[slot] = { key: s.key, dir: s.dir };
+      }
+    }
+  }
+
+  function dirOpener(side) {
+    if (side === 'remote') return (e) => loadRemote(posixJoin(state.remote.path, e.name));
+    if (side === 'r2r')    return (e) => loadR2R(posixJoin(state.r2rHost.remote.path, e.name));
+    return (e) => loadLocal(joinLocal(state.local.path, e.name));
+  }
+  // Re-render a pane from its cached listing (no network) — used after a sort change.
+  function rerenderTree(side) {
+    const pane = paneState(side);
+    if (!pane || pane.path == null) return;
+    const ul = side === 'remote' ? dom.remoteTree : dom.localTree;
+    renderTree(ul, side, pane.path, pane.entries, dirOpener(side));
+  }
+
+  function setSort(side, key) {
+    if (!SORT_KEYS.has(key)) return;
+    const cur = sortState[sortSlot(side)];
+    if (cur.key === key) {
+      cur.dir = cur.dir === 'asc' ? 'desc' : 'asc';   // same column → flip direction
+    } else {
+      cur.key = key;
+      cur.dir = key === 'name' ? 'asc' : 'desc';       // name A→Z; size/date biggest/newest first
+    }
+    persistSort();
+    updateSortHeader(side);
+    rerenderTree(side);
+  }
+  function updateSortHeader(side) {
+    const head = side === 'remote' ? dom.remoteHead : dom.localHead;
+    if (!head) return;
+    const { key, dir } = sortState[sortSlot(side)];
+    head.querySelectorAll('.th[data-sort]').forEach((th) => {
+      const active = th.dataset.sort === key;
+      th.classList.toggle('active', active);
+      const arrow = th.querySelector('.sort-arrow');
+      if (arrow) arrow.textContent = active ? (dir === 'asc' ? '▲' : '▼') : '';
+    });
+  }
+  function initSort() {
+    loadPersistedSort();
+    [dom.remoteHead, dom.localHead].forEach((head) => {
+      if (!head) return;
+      head.querySelectorAll('.th[data-sort]').forEach((th) => {
+        th.addEventListener('click', (ev) => {
+          ev.stopPropagation();                 // don't let the pane background click clear selection
+          setSort(th.dataset.side, th.dataset.sort);
+        });
+      });
+    });
+    updateSortHeader('remote');
+    updateSortHeader('local');
+  }
+
   // ---- Rendering ----
   function renderTree(ul, side, currentPath, entries, onDirOpen) {
     ul.replaceChildren();
@@ -286,10 +383,8 @@
       p.sorted = [];
       return;
     }
-    const sorted = entries.slice().sort((a, b) => {
-      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
+    const { key, dir } = sortState[sortSlot(side)];
+    const sorted = sortEntries(entries, key, dir);
     p.sorted = sorted;
     sorted.forEach((e, idx) => {
       const fullPath = rowPath(side, currentPath, e.name);
@@ -1654,6 +1749,7 @@
     });
   }
   initDateToggle();
+  initSort();
 
   // ---- Init ----
   loadLocal();

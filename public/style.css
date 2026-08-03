@@ -190,8 +190,9 @@ body.dragging-splitter * { user-select: none !important; }
 .pane.drag-into-pane { outline: 2px dashed #3b82f6; outline-offset: -2px; background: #eff6ff; }
 .pane > header {
   display: flex;
+  flex-wrap: wrap;          /* narrow panes: reflow the toolbar onto extra rows */
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem 0.5rem;       /* row-gap kicks in only when wrapped */
   padding: 0.4rem 0.75rem;
   border-bottom: 1px solid #e5e7eb;
   background: #f9fafb;
@@ -224,8 +225,16 @@ body.dragging-splitter * { user-select: none !important; }
 .crumb.crumb-current:hover { background: transparent; text-decoration: none; }
 .crumb.drag-over { background: #bfdbfe; outline: 1px solid #3b82f6; outline-offset: -1px; }
 .crumb-sep { flex: 0 0 auto; color: #9ca3af; user-select: none; }
-.actions { display: flex; gap: 0.25rem; }
-.actions button { padding: 0.2rem 0.5rem; font-size: 0.9em; }
+/* The button palette wraps within itself once it can't share the header's
+   first line — buttons keep their size (flex: 0 0 auto) and spill to new rows
+   instead of shrinking. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+.actions button { padding: 0.2rem 0.5rem; font-size: 0.9em; flex: 0 0 auto; }
 
 /* --- Tree --- */
 .tree {

@@ -200,7 +200,10 @@ body.dragging-splitter * { user-select: none !important; }
 .pane-title { font-weight: 600; color: #374151; }
 .path {
   flex: 1;
-  min-width: 0;
+  /* Guarantee a readable path width: below this the button palette wraps to
+     the next row instead of squeezing the breadcrumb to a sliver. Capped at
+     100% so an extremely narrow pane can't force horizontal overflow. */
+  min-width: min(10rem, 100%);
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 0.85em;
   color: #4b5563;

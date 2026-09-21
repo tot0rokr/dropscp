@@ -1488,13 +1488,20 @@
       el.setAttribute('role', 'tab');
       const label = document.createElement('span');
       label.className = 'tab-label';
-      // In R2R the tab bar has to say which pane a tab is feeding.
+      // In R2R the tab bar has to say which pane a tab is feeding. The marker
+      // is its own span so it can be scaled up without the label following.
       const pane = !state.r2rMode ? ''
-        : isLeft && isRight ? '◫ '
-        : isLeft ? '◧ '
-        : isRight ? '◨ ' : '';
+        : isLeft && isRight ? '◫'
+        : isLeft ? '◧'
+        : isRight ? '◨' : '';
+      if (pane) {
+        const mark = document.createElement('span');
+        mark.className = 'tab-pane-mark';
+        mark.textContent = pane;
+        label.appendChild(mark);
+      }
       const prefix = tab.status === 'dead' ? '⚠ ' : (tab.status === 'reconnecting' ? '↻ ' : '');
-      label.textContent = pane + prefix + sessionLabel(tab.session);
+      label.appendChild(document.createTextNode(prefix + sessionLabel(tab.session)));
       const paneNote = !state.r2rMode ? ''
         : isLeft && isRight ? '  — both panes (same session)'
         : isLeft ? '  — left pane (pinned)'

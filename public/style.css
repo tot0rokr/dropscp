@@ -96,6 +96,14 @@ button.primary:hover { background: #1d4ed8; }
   35%      { box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.85); }
 }
 .tabs .tab.flash { animation: tab-flash 0.5s ease-out 2; }
+/* ◧ / ◨ / ◫ pane marker — Unicode has no larger half-filled square, so scale
+   the glyph itself rather than swapping it for a bigger codepoint. */
+.tabs .tab-pane-mark {
+  font-size: 1.45em;
+  line-height: 1;
+  margin-right: 0.3rem;
+  vertical-align: -0.1em;
+}
 .tabs .tab-label {
   overflow: hidden;
   text-overflow: ellipsis;

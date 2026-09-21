@@ -131,12 +131,30 @@ button.primary:hover { background: #1d4ed8; }
   color: #1f2937;
 }
 .topbar .r2r-toggle:disabled { opacity: 0.4; }
-/* While R2R is on, a tab is marked for the pane it feeds: blue edge = left
-   (pinned), amber edge = right (follows clicks), both = one session on both
-   sides. Amber matches the right pane's tint below. */
-.tabs.r2r .tab.active            { box-shadow: inset 4px 0 0 #93c5fd; }
-.tabs.r2r .tab.r2r-target        { box-shadow: inset -4px 0 0 #f59e0b; }
-.tabs.r2r .tab.active.r2r-target { box-shadow: inset 4px 0 0 #93c5fd, inset -4px 0 0 #f59e0b; }
+/* While R2R is on, each tab is filled with the colour of the pane it feeds:
+   blue = the pinned left pane (the usual active fill), orange = the right
+   pane, split = one session on both sides. */
+.tabs.r2r .tab.r2r-target {
+  background: #c2410c;
+  border-color: #9a3412;
+  color: #fff;
+}
+.tabs.r2r .tab.active.r2r-target {
+  background: linear-gradient(90deg, #2563eb 0 50%, #c2410c 50% 100%);
+  border-color: #1d4ed8;
+  color: #fff;
+}
+/* A dead or reconnecting session keeps its status colour either way. */
+.tabs.r2r .tab.r2r-target.disconnected {
+  background: #7f1d1d;
+  border-color: #ef4444;
+  color: #fecaca;
+}
+.tabs.r2r .tab.r2r-target.reconnecting {
+  background: #92400e;
+  border-color: #f59e0b;
+  color: #fde68a;
+}
 .pane#pane-local[data-side="r2r"] {
   /* Subtle amber tint to remind user the right pane is r2r mode */
   background: #fffbeb;

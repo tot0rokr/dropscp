@@ -681,6 +681,7 @@
       window.alert('Delete failed: ' + err.message);
     }
     navigateSide(side, pane.path);
+    mirrorRefresh(side, pane.path);
   }
 
   async function doRename(side) {
@@ -699,6 +700,7 @@
       window.alert('Rename failed: ' + err.message);
     }
     navigateSide(side, parent);
+    mirrorRefresh(side, parent);
   }
 
   async function doCopy(side) {
@@ -724,6 +726,7 @@
       window.alert(`Copy errors:\n${sample}${tail}`);
     }
     navigateSide(side, pane.path);
+    mirrorRefresh(side, pane.path);
   }
 
   async function doMove(side, items, dstDir) {
@@ -782,6 +785,7 @@
       window.alert(`Move errors:\n${sample}${tail}`);
     }
     navigateSide(side, pane.path);
+    mirrorRefresh(side, pane.path, dstDir);
   }
 
   // Select a single entry by name in the freshly loaded listing — used after a
@@ -851,6 +855,7 @@
             await Api.localMkdir(target);
           }
           navigateSide(side, pane.path);
+          mirrorRefresh(side, pane.path);
         } catch (err) {
           window.alert('mkdir failed: ' + err.message);
         }
@@ -1036,6 +1041,12 @@
     const isR2R = (srcSide === 'remote' || srcSide === 'r2r')
                && (dstSide === 'remote' || dstSide === 'r2r')
                && srcSide !== dstSide;
+    // Both panes on ONE host (same-session R2R): copy on the host itself rather
+    // than relaying every byte down to the server and straight back up.
+    if (isR2R && sessionIdForSide(srcSide) === sessionIdForSide(dstSide)) {
+      await sameHostCopy(sessionIdForSide(srcSide), workingItems, dstSide, dstDir, dstEntries);
+      return;
+    }
     try {
       if (isR2R) {
         const srcSessionId = sessionIdForSide(srcSide);
@@ -1062,6 +1073,62 @@
     } catch (err) {
       window.alert('transfer failed: ' + err.message);
     }
+  }
+
+  // Copy between two directories of one host, server-side (`cp -r`). No job /
+  // progress bar: nothing crosses the network, so the tree just shows "copying…"
+  // until it is done.
+  // `cp -r dir existingDir` would nest the source *inside* the target, so when
+  // overwriting an existing directory we copy its contents (`src/.`) instead —
+  // that merges, which is what a relayed transfer would have done.
+  async function sameHostCopy(sessionId, items, dstSide, dstDir, dstEntries) {
+    const dstDirNames = new Set((dstEntries || []).filter((e) => e.isDirectory).map((e) => e.name));
+    const tree = dstSide === 'remote' ? dom.remoteTree : dom.localTree;
+    renderMessage(tree, 'loading', 'copying…');
+    const errors = [];
+    for (const it of items) {
+      const dst = posixJoin(dstDir, it.name);
+      if (dst === it.path) continue;   // dropped into the folder it already lives in
+      if (!it.isDirectory && dstDirNames.has(it.name)) {
+        // `cp file dir/` would drop the file inside it — refuse instead.
+        errors.push(`${it.name}: a directory with that name already exists`);
+        continue;
+      }
+      const src = (it.isDirectory && dstDirNames.has(it.name))
+        ? it.path.replace(/\/+$/, '') + '/.'
+        : it.path;
+      try {
+        await Api.fileop({ side: 'remote', op: 'copy', sessionId, src, dst });
+      } catch (err) {
+        errors.push(`${it.name}: ${err.message}`);
+      }
+    }
+    if (errors.length) {
+      const sample = errors.slice(0, 5).join('\n');
+      const tail = errors.length > 5 ? `\n…and ${errors.length - 5} more` : '';
+      window.alert(`Copy errors:\n${sample}${tail}`);
+    }
+    // Leave the pane alone if the user browsed elsewhere while it ran.
+    if (paneState(dstSide).path === dstDir) navigateSide(dstSide, dstDir, { record: false });
+    mirrorRefresh(dstSide, dstDir);
+  }
+
+  // With the same session on both sides, a change made on one pane leaves the
+  // other stale whenever it is looking at a directory that just changed.
+  function mirrorSide(side) {
+    if (!state.r2rMode) return null;
+    const a = sessionIdForSide('remote');
+    const b = sessionIdForSide('r2r');
+    if (!a || a !== b) return null;
+    if (side === 'remote') return 'r2r';
+    if (side === 'r2r') return 'remote';
+    return null;
+  }
+  function mirrorRefresh(side, ...dirs) {
+    const other = mirrorSide(side);
+    if (!other) return;
+    const p = paneState(other).path;
+    if (p && dirs.includes(p)) navigateSide(other, p, { record: false });
   }
 
   function findAppendable(originSessionId, direction) {
@@ -1570,20 +1637,29 @@
       .filter(({ i }) => i !== state.activeIdx)
       .map(({ t }) => t);
   }
+  // Every open tab is a valid R2R destination — including the active one, which
+  // puts the SAME session on both sides (two directories of one host, no local
+  // round trip).
+  function r2rCandidates() {
+    return state.tabs;
+  }
   function populateR2RSelect() {
     const sel = dom.r2rHostSelect;
     const prevValue = sel.value;
+    const cands = r2rCandidates();
     sel.replaceChildren();
-    for (const t of otherTabs()) {
+    cands.forEach((t, i) => {
+      const self = i === state.activeIdx;
       const opt = document.createElement('option');
       opt.value = t.session.sessionId;
-      opt.textContent = sessionLabel(t.session);
-      opt.title = sessionTitle(t.session);
+      opt.textContent = sessionLabel(t.session) + (self ? '  (same session)' : '');
+      opt.title = sessionTitle(t.session) + (self ? ' — same session on both sides' : '');
       sel.appendChild(opt);
-    }
-    if (state.r2rHost && otherTabs().some((t) => t.session.sessionId === state.r2rHost.session.sessionId)) {
+    });
+    const known = (sid) => cands.some((t) => t.session.sessionId === sid);
+    if (state.r2rHost && known(state.r2rHost.session.sessionId)) {
       sel.value = state.r2rHost.session.sessionId;
-    } else if (prevValue && otherTabs().some((t) => t.session.sessionId === prevValue)) {
+    } else if (prevValue && known(prevValue)) {
       sel.value = prevValue;
     }
   }
@@ -1597,9 +1673,9 @@
   }
 
   async function enableR2R() {
-    const candidates = otherTabs();
-    if (candidates.length === 0) return; // toggle should be disabled, but guard anyway
-    const dstTab = candidates[0];
+    // Prefer a second host; with a single tab open, mirror it onto itself.
+    const dstTab = otherTabs()[0] || state.tabs[state.activeIdx];
+    if (!dstTab) return; // toggle should be disabled, but guard anyway
     state.r2rMode = true;
     state.r2rHost = { session: dstTab.session, remote: emptyRemoteState() };
     setRightSide(true);
@@ -1623,11 +1699,12 @@
 
   function refreshR2RAvailability() {
     // Called whenever tab set or active tab changes.
-    const others = otherTabs();
-    dom.r2rToggle.disabled = others.length === 0;
+    const cands = r2rCandidates();
+    dom.r2rToggle.disabled = cands.length === 0;
     if (state.r2rMode) {
-      if (!state.r2rHost || !others.some((t) => t.session.sessionId === state.r2rHost.session.sessionId)) {
-        // Current dst tab is gone (closed) or has become the active tab — turn off
+      if (!state.r2rHost || !cands.some((t) => t.session.sessionId === state.r2rHost.session.sessionId)) {
+        // Current dst tab was closed — nothing left to mirror. (It becoming the
+        // active tab is fine: that is just same-session mode.)
         disableR2R();
       } else {
         populateR2RSelect();

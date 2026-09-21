@@ -75,8 +75,9 @@ presets (see [Configuration](#configuration)).
 | **Same-host queue merge** | Dropping more files onto the same host in the same direction while a transfer is running folds them into the running job instead of starting a second one — so concurrent jobs never share SFTP channels. Opposite-direction / R2R drops run as separate concurrent jobs with their own channels. |
 | **File type icons** | The tree and transfer list pick an emoji per extension (image, video, audio, archive, code, doc, executable, font, disk image). |
 | **Presets** | Save the non-secret bits of a connection (name + user + host + port) to `config.json`. The login dialog has a dropdown to recall and buttons to rename (✎) and delete (✕) presets. |
-| **Multi-host tabs** | One tab per open SSH session. `+` to add, `×` to close (terminates the session). Each tab keeps its own current path and tree state. |
-| **R2R (remote↔remote)** | Toggle button in the top bar; right pane swaps from local to a second remote chosen via dropdown. Drops between the two remotes go through `/api/r2r`. v1 uses a local-relay strategy (src → local temp → dst); direct `scp` via `sshpass` is deferred (see [Roadmap](#roadmap)). |
+| **Multi-host tabs** | One tab per open SSH session, labelled with its preset name when one matches (address otherwise). `+` to add, `×` to close (terminates the session). Each tab keeps its own current path and tree state. Connecting to a host that is already open switches to its tab instead of opening a second session. |
+| **R2R (remote↔remote)** | Toggle button in the top bar; right pane swaps from local to a remote chosen via dropdown. Drops between the two remotes go through `/api/r2r`. v1 uses a local-relay strategy (src → local temp → dst); direct `scp` via `sshpass` is deferred (see [Roadmap](#roadmap)). |
+| **Same-session R2R** | The dropdown also lists the active tab itself, putting one host on both sides — two directories of the same server, side by side. Drops between them copy on the host (`cp -r`, no relay), so nothing crosses the network; both panes refresh when they show a directory that changed. |
 | **Resizable splitter** | The divider between the two panes can be dragged to resize. Default 50/50, clamped to [0.1, 0.9], scales proportionally on window resize, not persisted. |
 
 ## Configuration

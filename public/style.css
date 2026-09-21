@@ -119,7 +119,7 @@ button.primary:hover { background: #1d4ed8; }
 }
 .topbar .tab-add { padding: 0.2rem 0.55rem; font-size: 1em; line-height: 1; }
 
-/* --- R2R toggle + host picker --- */
+/* --- R2R toggle + tab → pane markers --- */
 .topbar .r2r-toggle {
   padding: 0.2rem 0.55rem;
   font-size: 0.85em;
@@ -131,17 +131,12 @@ button.primary:hover { background: #1d4ed8; }
   color: #1f2937;
 }
 .topbar .r2r-toggle:disabled { opacity: 0.4; }
-.r2r-host-select {
-  font: inherit;
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 0.85em;
-  padding: 0.2rem 0.4rem;
-  border: 1px solid #d97706;
-  border-radius: 4px;
-  background: #fffbeb;
-  color: #92400e;
-  max-width: 220px;
-}
+/* While R2R is on, a tab is marked for the pane it feeds: blue edge = left
+   (pinned), amber edge = right (follows clicks), both = one session on both
+   sides. Amber matches the right pane's tint below. */
+.tabs.r2r .tab.active            { box-shadow: inset 4px 0 0 #93c5fd; }
+.tabs.r2r .tab.r2r-target        { box-shadow: inset -4px 0 0 #f59e0b; }
+.tabs.r2r .tab.active.r2r-target { box-shadow: inset 4px 0 0 #93c5fd, inset -4px 0 0 #f59e0b; }
 .pane#pane-local[data-side="r2r"] {
   /* Subtle amber tint to remind user the right pane is r2r mode */
   background: #fffbeb;
@@ -204,7 +199,16 @@ body.dragging-splitter * { user-select: none !important; }
   border-bottom: 1px solid #e5e7eb;
   background: #f9fafb;
 }
-.pane-title { font-weight: 600; color: #374151; }
+.pane-title {
+  font-weight: 600;
+  color: #374151;
+  /* Holds a session name in R2R mode — cap it so the breadcrumb keeps its room. */
+  min-width: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .path {
   flex: 1;
   /* Guarantee a readable path width: below this the button palette wraps to

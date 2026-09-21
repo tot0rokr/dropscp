@@ -120,7 +120,7 @@
     panes:          $('.panes'),
     splitter:       $('#pane-splitter'),
     r2rToggle:      $('#r2r-toggle'),
-    r2rHostSelect:  $('#r2r-host-select'),
+    leftTitle:      $('#left-title'),
     rightTitle:     $('#right-title'),
     logBtn:         $('#log-btn'),
     logDialog:      $('#log-dialog'),
@@ -918,7 +918,7 @@
       catch { return; }
       if (!payload || !Array.isArray(payload.items) || payload.items.length === 0) return;
       if (side === 'remote' && !state.session) { window.alert('connect to a remote host first'); return; }
-      if (side === 'r2r' && !state.r2rHost)   { window.alert('pick a destination host first'); return; }
+      if (side === 'r2r' && !state.r2rHost)   { window.alert('the right pane has no session'); return; }
       const folderLi = ev.target.closest && ev.target.closest('li.dir');
       let targetDir;
       if (folderLi && folderLi.dataset.side === side) {
@@ -1450,7 +1450,7 @@
   // Presets changed: re-label anything that shows a session name.
   function relabelSessions() {
     renderTabs();
-    populateR2RSelect();
+    updatePaneTitles();
   }
 
   // Two tabs on one host would be two SSH sessions onto the same filesystem —
@@ -1471,11 +1471,16 @@
   }
 
   function renderTabs() {
+    const targetSid = r2rTargetSid();
+    dom.tabs.classList.toggle('r2r', state.r2rMode);
     dom.tabs.replaceChildren();
     state.tabs.forEach((tab, idx) => {
+      const isLeft = idx === state.activeIdx;
+      const isRight = targetSid === tab.session.sessionId;
       const el = document.createElement('div');
       let cls = 'tab';
-      if (idx === state.activeIdx) cls += ' active';
+      if (isLeft) cls += ' active';
+      if (isRight) cls += ' r2r-target';
       if (tab.status === 'dead') cls += ' disconnected';
       else if (tab.status === 'reconnecting') cls += ' reconnecting';
       el.className = cls;
@@ -1483,11 +1488,20 @@
       el.setAttribute('role', 'tab');
       const label = document.createElement('span');
       label.className = 'tab-label';
+      // In R2R the tab bar has to say which pane a tab is feeding.
+      const pane = !state.r2rMode ? ''
+        : isLeft && isRight ? '◫ '
+        : isLeft ? '◧ '
+        : isRight ? '◨ ' : '';
       const prefix = tab.status === 'dead' ? '⚠ ' : (tab.status === 'reconnecting' ? '↻ ' : '');
-      label.textContent = prefix + sessionLabel(tab.session);
+      label.textContent = pane + prefix + sessionLabel(tab.session);
+      const paneNote = !state.r2rMode ? ''
+        : isLeft && isRight ? '  — both panes (same session)'
+        : isLeft ? '  — left pane (pinned)'
+        : isRight ? '  — right pane' : '  — click to show in the right pane';
       label.title = tab.status === 'dead'
         ? `${sessionTitle(tab.session)} — disconnected; press Refresh to reconnect`
-        : `${sessionTitle(tab.session)}  (sftp)`;
+        : `${sessionTitle(tab.session)}  (sftp)${paneNote}`;
       const close = document.createElement('span');
       close.className = 'tab-close';
       close.textContent = '×';
@@ -1497,6 +1511,9 @@
         if (ev.target === close) {
           ev.stopPropagation();
           closeTab(idx);
+        } else if (state.r2rMode) {
+          // Left pane is pinned while R2R is on; tabs drive the right pane.
+          setR2RTarget(idx);
         } else if (idx !== state.activeIdx) {
           activateTab(idx);
         }
@@ -1520,6 +1537,7 @@
     state.activeIdx = idx;
     bindActiveTab();
     renderTabs();
+    updatePaneTitles();
     if (state.remote.path === null) {
       // First time on this tab — load home dir
       loadRemote('.');
@@ -1535,6 +1553,8 @@
 
   async function closeTab(idx) {
     const tab = state.tabs[idx];
+    if (!tab) return;
+    const wasActive = idx === state.activeIdx;
     try { await Api.disconnect(tab.session.sessionId); } catch (_) {}
     state.tabs.splice(idx, 1);
     if (state.tabs.length === 0) {
@@ -1544,10 +1564,21 @@
       renderBreadcrumb('remote', dom.remotePath, '');
       renderMessage(dom.remoteTree, 'empty', 'connect to a host to browse');
       updateHistButtons('remote');
-      refreshR2RAvailability();
+      updatePaneTitles();
+      refreshR2RAvailability();   // drops R2R mode with no session left to show
       return;
     }
-    activateTab(Math.min(idx, state.tabs.length - 1));
+    if (wasActive) {
+      activateTab(Math.min(idx, state.tabs.length - 1));
+      return;
+    }
+    // Closing a background tab must not move the left pane — it only shifts
+    // indices. refreshR2RAvailability re-points the right pane if that tab
+    // was the one it was showing.
+    if (idx < state.activeIdx) state.activeIdx -= 1;
+    bindActiveTab();
+    renderTabs();
+    refreshR2RAvailability();
   }
 
   // ---- Login ----
@@ -1595,9 +1626,8 @@
       const wasDead = state.tabs[dupIdx].status === 'dead';
       dom.loginDialog.close();
       dom.loginForm.reset();
-      activateTab(dupIdx);
+      revealTab(dupIdx, wasDead);
       flashTab(dupIdx);
-      if (wasDead) loadRemote(state.remote.path || '.');
       return;
     }
 
@@ -1620,7 +1650,7 @@
       state.tabs.push(tab);
       dom.loginDialog.close();
       dom.loginForm.reset();
-      activateTab(state.tabs.length - 1);
+      revealTab(state.tabs.length - 1);
     } catch (err) {
       dom.loginError.textContent = err.message;
       dom.loginError.hidden = false;
@@ -1631,36 +1661,51 @@
   });
 
   // ---- R2R mode ----
-  function otherTabs() {
-    return state.tabs
-      .map((t, i) => ({ t, i }))
-      .filter(({ i }) => i !== state.activeIdx)
-      .map(({ t }) => t);
+  // The left pane is pinned to whichever tab was active when R2R was switched
+  // on; from then on clicking a tab moves the RIGHT pane to it. R2R starts on
+  // the same session (two directories of one host) — pick another tab to make
+  // it a second host. The toggle switches the whole mode off again.
+  function r2rTargetSid() {
+    return state.r2rMode && state.r2rHost ? state.r2rHost.session.sessionId : null;
   }
-  // Every open tab is a valid R2R destination — including the active one, which
-  // puts the SAME session on both sides (two directories of one host, no local
-  // round trip).
-  function r2rCandidates() {
-    return state.tabs;
+
+  // Show a tab: on the right pane while R2R pins the left one, otherwise on the
+  // left. `reload` forces a fresh listing (how a dead tab gets reconnected) —
+  // skipped when the pane switch already issued one.
+  function revealTab(idx, reload) {
+    if (!state.tabs[idx]) return;
+    if (state.r2rMode) {
+      setR2RTarget(idx);
+      if (reload && state.r2rHost.remote.path !== null) loadR2R(state.r2rHost.remote.path);
+    } else {
+      activateTab(idx);
+      if (reload && state.remote.path !== null) loadRemote(state.remote.path);
+    }
   }
-  function populateR2RSelect() {
-    const sel = dom.r2rHostSelect;
-    const prevValue = sel.value;
-    const cands = r2rCandidates();
-    sel.replaceChildren();
-    cands.forEach((t, i) => {
-      const self = i === state.activeIdx;
-      const opt = document.createElement('option');
-      opt.value = t.session.sessionId;
-      opt.textContent = sessionLabel(t.session) + (self ? '  (same session)' : '');
-      opt.title = sessionTitle(t.session) + (self ? ' — same session on both sides' : '');
-      sel.appendChild(opt);
-    });
-    const known = (sid) => cands.some((t) => t.session.sessionId === sid);
-    if (state.r2rHost && known(state.r2rHost.session.sessionId)) {
-      sel.value = state.r2rHost.session.sessionId;
-    } else if (prevValue && known(prevValue)) {
-      sel.value = prevValue;
+
+  function setR2RTarget(idx) {
+    const tab = state.tabs[idx];
+    if (!tab) return;
+    if (r2rTargetSid() === tab.session.sessionId) return;   // already there — keep its path
+    state.r2rHost = { session: tab.session, remote: emptyRemoteState() };
+    updatePaneTitles();
+    renderTabs();
+    loadR2R('.');
+  }
+
+  // Pane headers name what each side is showing: the session on the left, and
+  // either the local FS or the mirrored session on the right.
+  function updatePaneTitles() {
+    dom.leftTitle.textContent = state.session ? sessionLabel(state.session) : 'Remote';
+    dom.leftTitle.title = state.session ? sessionTitle(state.session) : '';
+    if (state.r2rMode && state.r2rHost) {
+      const same = state.session && state.session.sessionId === state.r2rHost.session.sessionId;
+      dom.rightTitle.textContent = sessionLabel(state.r2rHost.session);
+      dom.rightTitle.title = sessionTitle(state.r2rHost.session)
+        + (same ? ' — same session as the left pane' : '');
+    } else {
+      dom.rightTitle.textContent = 'Local';
+      dom.rightTitle.title = '';
     }
   }
 
@@ -1673,16 +1718,15 @@
   }
 
   async function enableR2R() {
-    // Prefer a second host; with a single tab open, mirror it onto itself.
-    const dstTab = otherTabs()[0] || state.tabs[state.activeIdx];
-    if (!dstTab) return; // toggle should be disabled, but guard anyway
+    // Opens on the active tab's own session; the left pane is pinned to it.
+    const tab = state.tabs[state.activeIdx];
+    if (!tab) return; // toggle should be disabled, but guard anyway
     state.r2rMode = true;
-    state.r2rHost = { session: dstTab.session, remote: emptyRemoteState() };
+    state.r2rHost = { session: tab.session, remote: emptyRemoteState() };
     setRightSide(true);
-    dom.rightTitle.hidden = true;
-    dom.r2rHostSelect.hidden = false;
-    populateR2RSelect();
     dom.r2rToggle.classList.add('active');
+    updatePaneTitles();
+    renderTabs();
     await loadR2R('.');
   }
 
@@ -1690,25 +1734,22 @@
     state.r2rMode = false;
     state.r2rHost = null;
     setRightSide(false);
-    dom.rightTitle.hidden = false;
-    dom.r2rHostSelect.hidden = true;
     dom.r2rToggle.classList.remove('active');
+    updatePaneTitles();
+    renderTabs();
     // Restore local listing
     loadLocal(state.local.path || undefined);
   }
 
   function refreshR2RAvailability() {
     // Called whenever tab set or active tab changes.
-    const cands = r2rCandidates();
-    dom.r2rToggle.disabled = cands.length === 0;
-    if (state.r2rMode) {
-      if (!state.r2rHost || !cands.some((t) => t.session.sessionId === state.r2rHost.session.sessionId)) {
-        // Current dst tab was closed — nothing left to mirror. (It becoming the
-        // active tab is fine: that is just same-session mode.)
-        disableR2R();
-      } else {
-        populateR2RSelect();
-      }
+    dom.r2rToggle.disabled = state.tabs.length === 0;
+    if (!state.r2rMode) return;
+    if (state.tabs.length === 0) { disableR2R(); return; }
+    // The targeted tab was closed — fall back to mirroring the left pane
+    // rather than dropping out of R2R behind the user's back.
+    if (!state.tabs.some((t) => t.session.sessionId === r2rTargetSid())) {
+      setR2RTarget(state.activeIdx);
     }
   }
 
@@ -1716,15 +1757,6 @@
     if (dom.r2rToggle.disabled) return;
     if (state.r2rMode) disableR2R();
     else enableR2R();
-  });
-
-  dom.r2rHostSelect.addEventListener('change', () => {
-    if (!state.r2rMode) return;
-    const sid = dom.r2rHostSelect.value;
-    const tab = state.tabs.find((t) => t.session.sessionId === sid);
-    if (!tab) return;
-    state.r2rHost = { session: tab.session, remote: emptyRemoteState() };
-    loadR2R('.');
   });
 
   // ---- Pane splitter (resizable divider) ----

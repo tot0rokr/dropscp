@@ -89,6 +89,13 @@ button.primary:hover { background: #1d4ed8; }
   border-color: #f59e0b;
   color: #fde68a;
 }
+/* Pulse when a tab is brought forward by something other than a click —
+   re-connecting to a host that is already open switches to its tab. */
+@keyframes tab-flash {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0); }
+  35%      { box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.85); }
+}
+.tabs .tab.flash { animation: tab-flash 0.5s ease-out 2; }
 .tabs .tab-label {
   overflow: hidden;
   text-overflow: ellipsis;

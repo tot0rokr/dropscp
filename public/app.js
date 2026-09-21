@@ -1386,6 +1386,23 @@
     populateR2RSelect();
   }
 
+  // Two tabs on one host would be two SSH sessions onto the same filesystem —
+  // that is what R2R's same-session mode is for, so tabs stay unique.
+  function sameEndpoint(a, b) {
+    return a.username === b.username && a.host === b.host
+      && (Number(a.port) || 22) === (Number(b.port) || 22);
+  }
+
+  // Pulse a tab so a switch the user did not click is visible.
+  function flashTab(idx) {
+    const el = dom.tabs.children[idx];
+    if (!el) return;
+    el.classList.remove('flash');
+    void el.offsetWidth;   // restart the animation if it is already running
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1500);
+  }
+
   function renderTabs() {
     dom.tabs.replaceChildren();
     state.tabs.forEach((tab, idx) => {
@@ -1503,6 +1520,19 @@
       port:     Number(fd.get('port')) || 22,
       password: String(fd.get('password') || ''),
     };
+
+    // Already open? Bring that tab forward instead of opening a second session
+    // onto the same host. A dead tab gets a refresh, which reconnects it.
+    const dupIdx = state.tabs.findIndex((t) => sameEndpoint(t.session, creds));
+    if (dupIdx >= 0) {
+      const wasDead = state.tabs[dupIdx].status === 'dead';
+      dom.loginDialog.close();
+      dom.loginForm.reset();
+      activateTab(dupIdx);
+      flashTab(dupIdx);
+      if (wasDead) loadRemote(state.remote.path || '.');
+      return;
+    }
 
     connectInFlight = true;
     dom.loginError.hidden = true;

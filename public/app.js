@@ -1283,6 +1283,7 @@
       state.presets = [];
     }
     populatePresetSelect();
+    relabelSessions();
   }
 
   dom.presetSelect.addEventListener('change', () => {
@@ -1312,6 +1313,7 @@
       const data = await Api.savePreset({ name, username, host, port });
       state.presets = data.presets;
       populatePresetSelect();
+      relabelSessions();
       dom.presetSelect.value = name;
       dom.loginError.hidden = true;
     } catch (err) {
@@ -1329,6 +1331,7 @@
       const data = await Api.renamePreset(name, newName);
       state.presets = data.presets;
       populatePresetSelect();
+      relabelSessions();
       dom.presetSelect.value = newName.trim();
       dom.loginError.hidden = true;
     } catch (err) {
@@ -1345,6 +1348,7 @@
       const data = await Api.deletePreset(name);
       state.presets = data.presets;
       populatePresetSelect();
+      relabelSessions();
       dom.presetSelect.value = '';
     } catch (err) {
       dom.loginError.textContent = err.message;
@@ -1353,8 +1357,33 @@
   });
 
   // ---- Tabs (multi-host) ----
-  function sessionLabel(s) {
+  function sessionAddr(s) {
     return s.port === 22 ? `${s.username}@${s.host}` : `${s.username}@${s.host}:${s.port}`;
+  }
+
+  // A saved preset with the same username/host/port gives the session a friendly name.
+  function presetNameFor(s) {
+    if (!s) return null;
+    const port = Number(s.port) || 22;
+    const hit = state.presets.find(
+      (p) => p.username === s.username && p.host === s.host && (Number(p.port) || 22) === port);
+    return hit ? hit.name : null;
+  }
+
+  function sessionLabel(s) {
+    return presetNameFor(s) || sessionAddr(s);
+  }
+
+  // Full form for tooltips — never hides the address behind the preset name.
+  function sessionTitle(s) {
+    const name = presetNameFor(s);
+    return name ? `${name} — ${sessionAddr(s)}` : sessionAddr(s);
+  }
+
+  // Presets changed: re-label anything that shows a session name.
+  function relabelSessions() {
+    renderTabs();
+    populateR2RSelect();
   }
 
   function renderTabs() {
@@ -1373,8 +1402,8 @@
       const prefix = tab.status === 'dead' ? '⚠ ' : (tab.status === 'reconnecting' ? '↻ ' : '');
       label.textContent = prefix + sessionLabel(tab.session);
       label.title = tab.status === 'dead'
-        ? `${sessionLabel(tab.session)} — disconnected; press Refresh to reconnect`
-        : `${sessionLabel(tab.session)}  (sftp)`;
+        ? `${sessionTitle(tab.session)} — disconnected; press Refresh to reconnect`
+        : `${sessionTitle(tab.session)}  (sftp)`;
       const close = document.createElement('span');
       close.className = 'tab-close';
       close.textContent = '×';
@@ -1519,6 +1548,7 @@
       const opt = document.createElement('option');
       opt.value = t.session.sessionId;
       opt.textContent = sessionLabel(t.session);
+      opt.title = sessionTitle(t.session);
       sel.appendChild(opt);
     }
     if (state.r2rHost && otherTabs().some((t) => t.session.sessionId === state.r2rHost.session.sessionId)) {
@@ -1752,5 +1782,7 @@
   initSort();
 
   // ---- Init ----
+  // Presets up front: tab labels and the transfer log resolve names from them.
+  refreshPresets();
   loadLocal();
 })();

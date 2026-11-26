@@ -1927,6 +1927,29 @@
   initDateToggle();
   initSort();
 
+  // ---- Full text on hover for ellipsis-truncated text ----
+  // One delegated listener instead of a title per render site: on hover, walk up from the
+  // target to the nearest element styled with text-overflow: ellipsis; if it's actually
+  // clipped and has no title of its own, show its full text as a tooltip. The auto title
+  // is dropped on leave so it never goes stale when the element's text changes later.
+  function initOverflowTitles() {
+    document.addEventListener('mouseover', (ev) => {
+      for (let el = ev.target; el && el !== document.body; el = el.parentElement) {
+        if (getComputedStyle(el).textOverflow !== 'ellipsis') continue;
+        if (el.title || el.scrollWidth <= el.clientWidth) return;
+        const text = el.textContent.trim();
+        if (!text) return;
+        el.title = text;
+        el.dataset.autoTitle = '1';
+        el.addEventListener('mouseleave', () => {
+          if (el.dataset.autoTitle) { el.removeAttribute('title'); delete el.dataset.autoTitle; }
+        }, { once: true });
+        return;
+      }
+    });
+  }
+  initOverflowTitles();
+
   // ---- Init ----
   // Presets up front: tab labels and the transfer log resolve names from them.
   refreshPresets();
